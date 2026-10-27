@@ -152,7 +152,7 @@
   .stage-bar .key { min-width: 6em; font-size: 1.05rem; }
   .stage-bar .length, .stage-bar .length-input { font-family: var(--font-mono); width: 4.6em; text-align: center; font-variant-numeric: tabular-nums; padding-inline: 4px; }
   .stage-bar .length-input { font-size: 1rem; padding-block: 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--ink); }
-  .stage-bar .pos { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: center; }
+  .stage-bar #stage-picker { width: 15em; max-width: 46vw; text-overflow: ellipsis; }
   .stage-bar #scroll-play[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .stage-bar .sep { width: 1px; align-self: stretch; background: var(--line); }
   @media (max-width: 700px) {
@@ -286,7 +286,7 @@
   <button id="stage-exit">Studio</button>
   <div class="group" role="group" aria-label="Song">
     <button id="stage-prev" aria-label="Previous song">◀</button>
-    <span class="pos" id="stage-pos"></span>
+    <select id="stage-picker" aria-label="Song"></select>
     <button id="stage-next" aria-label="Next song">▶</button>
   </div>
   <span class="sep"></span>

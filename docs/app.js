@@ -246,13 +246,13 @@ function renderSong() {
   renderSheet($('sheet'), song);
 }
 
-const STAGE_CONTROLS = ['stage-prev', 'stage-next', 'stage-down', 'stage-up', 'stage-spelling', 'scroll-play', 'scroll-slower', 'scroll-faster', 'scroll-length'];
+const STAGE_CONTROLS = ['stage-prev', 'stage-next', 'stage-down', 'stage-up', 'stage-spelling', 'scroll-play', 'scroll-slower', 'scroll-faster', 'scroll-length', 'stage-picker'];
 
 function renderStageBar(record, list) {
   for (const id of STAGE_CONTROLS) $(id).disabled = !record;
   if (!record) {
     $('stage-key').textContent = '';
-    $('stage-pos').textContent = '';
+    $('stage-picker').replaceChildren();
     $('scroll-length').textContent = '';
     return;
   }
@@ -262,7 +262,14 @@ function renderStageBar(record, list) {
   $('stage-key').textContent = record.semitones ? `${from} → ${to}` : `Key ${to || '?'}`;
   $('stage-spelling').value = record.spelling;
   const index = list ? list.songIds.indexOf(record.id) : -1;
-  $('stage-pos').textContent = index >= 0 ? `${index + 1} / ${list.songIds.length}` : '';
+  // Song picker: every song in the setlist, numbered.
+  const ids = list ? list.songIds : [record.id];
+  $('stage-picker').replaceChildren(...ids.map((id, i) => {
+    const option = el('option', '', `${i + 1}. ${library.songs[id]?.title || 'Untitled'}`);
+    option.value = id;
+    return option;
+  }));
+  $('stage-picker').value = record.id;
   $('stage-prev').disabled = index <= 0;
   $('stage-next').disabled = index < 0 || index >= list.songIds.length - 1;
   $('scroll-length').textContent = formatDuration(songLength(record));
@@ -677,6 +684,14 @@ $('view-stage').addEventListener('click', () => setView('stage'));
 $('view-studio').addEventListener('click', () => setView('studio'));
 $('stage-exit').addEventListener('click', () => setView('studio'));
 $('stage-prev').addEventListener('click', () => goToSong(-1));
+$('stage-picker').addEventListener('change', (e) => {
+  stopScroll();
+  ui.songId = e.target.value;
+  render();
+  window.scrollTo(0, 0);
+  // Give the keys (Space, arrows, pedals) back to Stage.
+  e.target.blur();
+});
 $('stage-next').addEventListener('click', () => goToSong(1));
 $('stage-up').addEventListener('click', () => shift(1));
 $('stage-down').addEventListener('click', () => shift(-1));

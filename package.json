@@ -1,0 +1,17 @@
+{
+  "name": "chord-transposer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "build": "node build.mjs",
+    "icons": "node icons.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.0",
+    "@fontsource/rubik": "^5.1.0",
+    "mammoth": "1.8.0",
+    "pdfjs-dist": "4.10.38"
+  }
+}

@@ -1,0 +1,341 @@
+<title>Chord Transposer Preview</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+  /* Layout: input and setlist in a narrow left column, the song sheet wide on the right; stacks on phones. */
+  :root {
+    --bg: #f3f5f7;
+    --surface: #ffffff;
+    --ink: #1c2430;
+    --muted: #5d6877;
+    --line: #d9dee5;
+    --chord: #0b6e72;
+    --accent: #0b6e72;
+    --accent-ink: #ffffff;
+    --tab-bg: #eef1f4;
+    --warn: #8a5a00;
+    --font-body: 'Rubik', 'Arial Hebrew', 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'Courier New', monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12161c; --surface: #1a2029; --ink: #e6eaf0; --muted: #9aa5b4; --line: #2c3440;
+      --chord: #5fd0cf; --accent: #5fd0cf; --accent-ink: #0d1a1c; --tab-bg: #151b23; --warn: #f0b85a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12161c; --surface: #1a2029; --ink: #e6eaf0; --muted: #9aa5b4; --line: #2c3440;
+    --chord: #5fd0cf; --accent: #5fd0cf; --accent-ink: #0d1a1c; --tab-bg: #151b23; --warn: #f0b85a;
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 40px;
+  }
+  header { max-width: 1200px; margin: 0 auto 18px; display: flex; flex-direction: column; gap: 4px; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin: 0; text-wrap: balance; }
+  header p { margin: 0; color: var(--muted); max-width: 65ch; line-height: 1.5; }
+  main { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 800px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .label { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 180px; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.45; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button, select, .file { font: inherit; font-size: 0.9rem; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 7px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 500; }
+  button:focus-visible, select:focus-visible, .file:focus-within, textarea:focus-visible, .setlist button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .status { font-size: 0.85rem; color: var(--muted); min-height: 1.2em; }
+  .status.error { color: var(--warn); }
+  .setlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; counter-reset: song; }
+  .setlist button { width: 100%; text-align: start; border: 0; border-radius: 6px; background: transparent; padding: 8px 10px; display: grid; grid-template-columns: 1.6em 1fr auto; gap: 6px; align-items: baseline; }
+  .setlist button[aria-current="true"] { background: var(--tab-bg); font-weight: 500; }
+  .setlist .n { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+  .setlist .t { min-width: 0; overflow-wrap: anywhere; }
+  .setlist .k { font-family: var(--font-mono); color: var(--chord); font-size: 0.85rem; }
+  .setlist .a { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+
+  .sheet-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; align-items: flex-end; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  .sheet-head h2 { margin: 0; font-size: 1.35rem; text-wrap: balance; }
+  .sheet-head .by { color: var(--muted); }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .key { font-family: var(--font-mono); font-weight: 600; color: var(--chord); min-width: 7.5em; text-align: center; font-variant-numeric: tabular-nums; }
+  .note { font-size: 0.85rem; color: var(--warn); }
+
+  .sheet { display: flex; flex-direction: column; gap: 2px; font-size: 1.05rem; line-height: 1.35; overflow-x: auto; }
+  .sheet[dir="rtl"] { text-align: right; }
+  .pair { display: flex; flex-wrap: wrap; align-items: flex-end; }
+  .seg { display: inline-flex; flex-direction: column; }
+  .seg .c { font-family: var(--font-mono); font-weight: 600; color: var(--chord); font-size: 0.9rem; min-height: 1.3em; white-space: pre; padding-right: 0.4em; direction: ltr; unicode-bidi: isolate; text-align: start; }
+  .sheet[dir="rtl"] .seg .c { text-align: right; padding-right: 0; padding-left: 0.4em; }
+  .seg .l { white-space: pre; }
+  .seg .c.other { color: var(--muted); font-weight: 500; }
+  .section { font-weight: 700; margin-top: 10px; }
+  .meta { color: var(--muted); font-size: 0.9rem; }
+  .blank { height: 0.7em; }
+  .tab { display: flex; }
+  .sheet[dir="rtl"] .tab { justify-content: flex-start; }
+  .tab pre { margin: 6px 0; font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.3; direction: ltr; text-align: left; background: var(--tab-bg); padding: 8px 10px; border-radius: 6px; overflow-x: auto; max-width: 100%; }
+  .empty { color: var(--muted); }
+  .drop-hint { display: none; }
+  body.dragging .panel[aria-label="Songs"] { outline: 2px dashed var(--accent); outline-offset: 4px; }
+  body.dragging .drop-hint { display: block; color: var(--accent); font-weight: 500; }
+  @media (prefers-reduced-motion: no-preference) { .setlist button { transition: background 0.12s; } }
+</style>
+
+<header>
+  <h1>Chord Transposer</h1>
+  <p>Step 1 preview of the transposing engine. Paste songs, or upload or drag in files (.txt, ChordPro, PDF, Word). Each song is detected, added to the setlist and can be transposed on its own. Hebrew songs read right to left.</p>
+</header>
+
+<main>
+  <section class="panel" aria-label="Songs">
+    <label class="label" for="input">Paste songs or drop files here</label>
+    <textarea id="input" spellcheck="false"></textarea>
+    <div class="row">
+      <button class="primary" id="read">Create setlist</button>
+      <label class="file" for="file">Upload files<input id="file" type="file" multiple accept=".txt,.cho,.chopro,.chordpro,.crd,.pdf,.docx,.html,.htm,text/plain"></label>
+    </div>
+    <div class="drop-hint">Drop to add these songs</div>
+    <div class="status" id="status" role="status"></div>
+    <span class="label">Setlist</span>
+    <ol class="setlist" id="setlist"></ol>
+  </section>
+
+  <section class="panel" aria-label="Song">
+    <div class="sheet-head">
+      <div>
+        <h2 id="title"></h2>
+        <div class="by" id="artist"></div>
+      </div>
+      <div class="controls">
+        <button id="down" aria-label="Down a semitone">−1</button>
+        <span class="key" id="key"></span>
+        <button id="up" aria-label="Up a semitone">+1</button>
+        <label class="label" for="spelling">Spelling</label>
+        <select id="spelling">
+          <option value="auto">Auto</option>
+          <option value="sharp">Sharps ♯</option>
+          <option value="flat">Flats ♭</option>
+        </select>
+        <button id="reset">Original key</button>
+      </div>
+    </div>
+    <div class="note" id="note" hidden></div>
+    <div class="sheet" id="sheet"></div>
+  </section>
+</main>
+
+<script type="module">
+  import { splitSongs, transposeSong, songBlocks, keyName, readFileText } from './src/index.js';
+
+  const SAMPLE = `Let It Be - The Beatles
+
+[Verse 1]
+C              G
+When I find myself in times of trouble
+Am             F
+Mother Mary comes to me
+C               G         F  C/E Dm C
+Speaking words of wisdom, let it be
+
+[Riff]
+e|-------0---1---0-------|
+B|---1-----------3---1---|
+
+
+ירושלים של זהב
+מילים ולחן: נעמי שמר
+
+Am        Dm
+אויר הרים צלול כיין
+G    C
+וריח אורנים
+E         Am
+נישא ברוח הערביים
+Dm E   Am
+עם קול פעמונים
+
+פתיחה:
+e|-----0-1-0-----|
+B|---1-------3---|
+
+
+{title: Amazing Grace}
+{key: G}
+[G]Amazing [G7]grace how [C]sweet the [G]sound
+That [G]saved a [Em]wretch like [D]me`;
+
+  const $ = (id) => document.getElementById(id);
+  const state = { songs: [], current: 0, shifts: [], spelling: 'auto' };
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function load(text) {
+    const songs = splitSongs(text);
+    state.songs = songs;
+    state.shifts = songs.map(() => 0);
+    state.current = 0;
+    $('status').className = 'status';
+    $('status').textContent = songs.length ? `Found ${songs.length} song${songs.length === 1 ? '' : 's'}.` : 'No songs found in that text.';
+    render();
+  }
+
+  function shown(i) {
+    return transposeSong(state.songs[i], state.shifts[i], state.spelling);
+  }
+
+  function renderSetlist() {
+    const list = $('setlist');
+    list.replaceChildren(...state.songs.map((song, i) => {
+      const li = el('li');
+      const b = el('button');
+      b.setAttribute('aria-current', String(i === state.current));
+      const t = el('span', 't', song.title);
+      t.dir = 'auto';
+      if (song.artist) { const a = el('span', 'a', song.artist); a.dir = 'auto'; t.append(a); }
+      const s = shown(i);
+      b.append(el('span', 'n', `${i + 1}.`), t, el('span', 'k', keyName(s.key, s.useFlats)));
+      b.addEventListener('click', () => { state.current = i; render(); });
+      li.append(b);
+      return li;
+    }));
+  }
+
+  function renderSheet() {
+    const sheet = $('sheet');
+    if (!state.songs.length) {
+      $('title').textContent = 'No song yet';
+      $('artist').textContent = '';
+      $('key').textContent = '';
+      sheet.replaceChildren(el('p', 'empty', 'Paste a song on the left, or drag a file onto the page.'));
+      return;
+    }
+    const song = shown(state.current);
+    const shift = state.shifts[state.current];
+    $('title').textContent = song.title;
+    $('title').dir = 'auto';
+    $('artist').textContent = song.artist;
+    $('artist').dir = 'auto';
+    const from = keyName(state.songs[state.current].key);
+    const to = keyName(song.key, song.useFlats);
+    $('key').textContent = shift ? `${from} → ${to}` : `Key ${to}`;
+    $('spelling').value = state.spelling;
+    const note = $('note');
+    note.hidden = !song.notes.length;
+    note.textContent = song.notes.length ? 'Some tab parts were moved up an octave, because shifting them down would need frets below the open string.' : '';
+
+    sheet.dir = song.dir;
+    const nodes = songBlocks(song).map((block) => {
+      if (block.kind === 'pair' || block.kind === 'chords') {
+        const row = el('div', 'pair');
+        for (const seg of block.segments) {
+          const s = el('span', 'seg');
+          const cls = 'c' + (seg.kind && seg.kind !== 'chord' ? ' other' : '');
+          if (block.kind === 'chords') {
+            // A chord line with no lyric: keep its spacing inside the chord row.
+            s.append(el('span', cls, (seg.chord || '').padEnd(seg.text.length)));
+          } else {
+            s.append(el('span', cls, seg.chord || ''), el('span', 'l', seg.text));
+          }
+          row.append(s);
+        }
+        return row;
+      }
+      if (block.kind === 'tab') {
+        const wrap = el('div', 'tab');
+        wrap.append(el('pre', '', block.lines.map((l) => l.trimStart()).join('\n')));
+        return wrap;
+      }
+      if (block.kind === 'blank') return el('div', 'blank');
+      const line = el('div', block.kind === 'lyric' ? 'lyric' : block.kind, block.text);
+      return line;
+    });
+    sheet.replaceChildren(...nodes);
+  }
+
+  function render() {
+    renderSetlist();
+    renderSheet();
+  }
+
+  function shiftBy(n) {
+    if (!state.songs.length) return;
+    state.shifts[state.current] = (((state.shifts[state.current] + n) % 12) + 12) % 12;
+    render();
+  }
+
+  $('up').addEventListener('click', () => shiftBy(1));
+  $('down').addEventListener('click', () => shiftBy(-1));
+  $('reset').addEventListener('click', () => { state.shifts[state.current] = 0; render(); });
+  $('spelling').addEventListener('change', (e) => { state.spelling = e.target.value; render(); });
+  $('read').addEventListener('click', () => load($('input').value));
+  // Read one or more files; each file's songs are added to one setlist.
+  async function handleFiles(files) {
+    files = [...files];
+    if (!files.length) return;
+    const status = $('status');
+    status.className = 'status';
+    status.textContent = files.length === 1 ? `Reading ${files[0].name}…` : `Reading ${files.length} files…`;
+    const texts = [];
+    const failed = [];
+    for (const file of files) {
+      try {
+        texts.push(await readFileText(file));
+      } catch (err) {
+        failed.push(`${file.name}: ${err.message || 'could not be read.'}`);
+      }
+    }
+    if (texts.length) {
+      // A separator row between files makes sure songs from different files never merge.
+      const text = texts.join('\n\n==========\n\n');
+      $('input').value = text;
+      load(text);
+    }
+    if (failed.length) {
+      status.className = 'status error';
+      status.textContent = (texts.length ? status.textContent + ' ' : '') + failed.join(' ');
+    }
+  }
+
+  $('file').addEventListener('change', async (e) => {
+    await handleFiles(e.target.files);
+    e.target.value = '';
+  });
+
+  // Drag and drop anywhere on the page.
+  let dragDepth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  document.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth++;
+    document.body.classList.add('dragging');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) document.body.classList.remove('dragging');
+  });
+  document.addEventListener('dragover', (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  document.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dragging');
+    handleFiles(e.dataTransfer.files);
+  });
+
+  $('input').value = SAMPLE;
+  load(SAMPLE);
+</script>

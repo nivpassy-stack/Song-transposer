@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chord Transposer</title>
+<meta name="description" content="Transpose guitar chords and tabs, keep setlists, and play with auto-scroll.">
+<meta name="theme-color" content="#0b6e72">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Transposer">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="fonts/fonts.css">
+<style>
+  :root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<style>
+  /* Layout: Studio = app bar on top, library rail on the left (setlists, then songs), song sheet filling the rest; rail stacks above the sheet on phones. */
+  :root {
+    --bg: #f3f5f7;
+    --surface: #ffffff;
+    --raised: #eef1f4;
+    --ink: #1c2430;
+    --muted: #5d6877;
+    --line: #d9dee5;
+    --chord: #0b6e72;
+    --accent: #0b6e72;
+    --accent-ink: #ffffff;
+    --warn: #8a5a00;
+    --danger: #b3261e;
+    --font-body: 'Rubik', 'Arial Hebrew', 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, 'Courier New', monospace;
+    --sheet-size: 18px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12161c; --surface: #1a2029; --raised: #232b36; --ink: #e6eaf0; --muted: #9aa5b4; --line: #2c3440;
+      --chord: #5fd0cf; --accent: #5fd0cf; --accent-ink: #0d1a1c; --warn: #f0b85a; --danger: #ff8a80;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12161c; --surface: #1a2029; --raised: #232b36; --ink: #e6eaf0; --muted: #9aa5b4; --line: #2c3440;
+    --chord: #5fd0cf; --accent: #5fd0cf; --accent-ink: #0d1a1c; --warn: #f0b85a; --danger: #ff8a80;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0 32px;
+  }
+  body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+
+  .appbar { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-block: 14px; max-width: 1400px; margin: 0 auto; }
+  .brand { font-weight: 700; font-size: 1.15rem; display: flex; align-items: baseline; gap: 8px; }
+  .brand small { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
+  .views { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .views button { border: 0; border-radius: 0; padding: 7px 14px; background: var(--surface); }
+  .views button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 500; }
+  .views button:disabled { color: var(--muted); cursor: not-allowed; }
+
+  .studio { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+  @media (max-width: 860px) { .studio { grid-template-columns: minmax(0, 1fr); } }
+
+  .rail { display: flex; flex-direction: column; gap: 14px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); max-height: calc(100vh - 88px); overflow-y: auto; }
+  @media (max-width: 860px) { .rail { position: static; max-height: none; } }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .label { font-size: 0.72rem; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+  button, select, input[type="text"], .file { font: inherit; font-size: 0.9rem; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); padding: 7px 12px; cursor: pointer; }
+  input[type="text"] { cursor: text; width: 100%; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 500; }
+  button.quiet { border-color: transparent; background: transparent; color: var(--muted); padding: 5px 8px; }
+  button.quiet:hover { color: var(--ink); background: var(--raised); }
+  button.danger { color: var(--danger); }
+  button.danger.armed { background: var(--danger); color: var(--surface); border-color: var(--danger); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  :is(button, select, input, textarea, .file):focus-visible, .file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .file { position: relative; display: inline-block; }
+  .file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+
+  .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .list button { width: 100%; text-align: start; border: 0; border-radius: 6px; background: transparent; padding: 7px 8px; display: grid; gap: 8px; align-items: baseline; }
+  .list button[aria-current="true"] { background: var(--raised); font-weight: 500; }
+  .setlists button { grid-template-columns: 1fr auto; }
+  .songs button { grid-template-columns: 1.7em minmax(0, 1fr) auto; }
+  .list .n, .list .count { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.82rem; font-weight: 400; }
+  .list .t { min-width: 0; overflow-wrap: anywhere; }
+  .list .a { display: block; font-size: 0.8rem; color: var(--muted); font-weight: 400; }
+  .list .k { font-family: var(--font-mono); color: var(--chord); font-size: 0.82rem; white-space: nowrap; }
+  .list .k .moved { color: var(--muted); }
+  .list-empty { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
+  .setlist-tools { display: flex; gap: 4px; flex-wrap: wrap; }
+  .backup-tools { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+
+  .main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .song-head { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .song-title { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; }
+  .song-title h1 { margin: 0; font-size: 1.45rem; text-wrap: balance; }
+  .song-title .by { color: var(--muted); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  .group { display: inline-flex; align-items: center; gap: 6px; }
+  .key { font-family: var(--font-mono); font-weight: 600; color: var(--chord); min-width: 6.5em; text-align: center; font-variant-numeric: tabular-nums; }
+  .capo { color: var(--muted); font-size: 0.85rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: 4px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .note { font-size: 0.85rem; color: var(--warn); }
+  .toast { font-size: 0.85rem; color: var(--accent); }
+  .toast:empty { display: none; }
+
+  .sheet-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px 28px; min-width: 0; }
+  .sheet { display: flex; flex-direction: column; gap: 2px; font-size: var(--sheet-size); line-height: 1.35; overflow-x: auto; }
+  .sheet[dir="rtl"] { text-align: right; }
+  .pair { display: block; }
+  .seg { display: inline-flex; flex-direction: column; vertical-align: bottom; }
+  .pair .rest { white-space: pre-wrap; }
+  .seg .c { font-family: var(--font-mono); font-weight: 600; color: var(--chord); font-size: 0.86em; min-height: 1.3em; white-space: pre; padding-right: 0.4em; direction: ltr; unicode-bidi: isolate; text-align: left; }
+  .sheet[dir="rtl"] .seg .c { text-align: right; padding-right: 0; padding-left: 0.4em; }
+  .seg .l { white-space: pre; }
+  .seg .c.other { color: var(--muted); font-weight: 500; }
+  .sheet .section { font-weight: 700; margin-top: 0.6em; }
+  .sheet .meta { color: var(--muted); font-size: 0.85em; }
+  .sheet .blank { height: 0.7em; }
+  .sheet .tab { display: flex; }
+  .sheet .tab pre { margin: 6px 0; font-family: var(--font-mono); font-size: 0.8em; line-height: 1.3; direction: ltr; text-align: left; background: var(--raised); padding: 8px 10px; border-radius: 6px; overflow-x: auto; max-width: 100%; }
+  .empty-state { color: var(--muted); line-height: 1.6; max-width: 50ch; }
+
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); padding: 0; width: min(680px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgb(0 0 0 / 0.35); }
+  .dialog-body { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .dialog-body h2 { margin: 0; font-size: 1.15rem; }
+  .dialog-body p { margin: 0; color: var(--muted); line-height: 1.5; }
+  textarea { width: 100%; min-height: 260px; resize: vertical; font-family: var(--font-mono); font-size: 13px; line-height: 1.45; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+  .dialog-actions .spacer { flex: 1; }
+  .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 160px; }
+  .fields { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  .drop-overlay { position: fixed; inset: 0; z-index: 20; display: none; place-items: center; background: rgb(11 110 114 / 0.12); border: 3px dashed var(--accent); font-size: 1.2rem; font-weight: 500; color: var(--accent); pointer-events: none; }
+  body.dragging .drop-overlay { display: grid; }
+  .drop-overlay span { background: var(--surface); padding: 12px 20px; border-radius: 10px; }
+  /* Stage view: the sheet fills the screen, controls sit in one bar at the bottom within thumb reach. */
+  .stage-title { display: none; }
+  .stage-bar { display: none; }
+  body.stage .appbar, body.stage .rail, body.stage .song-head { display: none; }
+  body.stage .studio { grid-template-columns: minmax(0, 1fr); max-width: none; }
+  body.stage .sheet-card { border: 0; background: transparent; padding: 16px 0 60vh; }
+  body.stage .sheet { --sheet-size: var(--stage-size, 26px); }
+  body.stage .stage-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 14px; color: var(--muted); }
+  body.stage .stage-title strong { color: var(--ink); font-size: 1.3rem; }
+  body.stage .stage-bar {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 14px;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 8;
+    background: var(--surface); border-top: 1px solid var(--line);
+    padding-top: 10px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .stage-bar .group { gap: 6px; }
+  .stage-bar button, .stage-bar select { padding: 9px 13px; font-size: 1rem; }
+  .stage-bar .key { min-width: 6em; font-size: 1.05rem; }
+  .stage-bar .length, .stage-bar .length-input { font-family: var(--font-mono); width: 4.6em; text-align: center; font-variant-numeric: tabular-nums; padding-inline: 4px; }
+  .stage-bar .length-input { font-size: 1rem; padding-block: 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--ink); }
+  .stage-bar .pos { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: center; }
+  .stage-bar #scroll-play[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .stage-bar .sep { width: 1px; align-self: stretch; background: var(--line); }
+  @media (max-width: 700px) {
+    .stage-bar .sep, .stage-bar #stage-full { display: none; }
+    .stage-bar { gap: 6px 8px; padding-top: 8px; }
+    .stage-bar button, .stage-bar select { padding: 8px 10px; }
+  }
+  @media (prefers-reduced-motion: no-preference) { .list button { transition: background 0.12s; } }
+</style>
+</head>
+<body>
+
+
+<header class="appbar">
+  <div class="brand">Chord Transposer <small>Studio</small></div>
+  <button class="primary" id="install" hidden>Install app</button>
+  <div class="views" role="group" aria-label="View">
+    <button id="view-studio" aria-pressed="true">Studio</button>
+    <button id="view-stage" aria-pressed="false">Stage</button>
+  </div>
+</header>
+
+<div class="studio">
+  <aside class="rail" aria-label="Library">
+    <button class="primary" id="add-songs">Add songs</button>
+
+    <section class="card" aria-labelledby="setlists-label">
+      <div class="card-head"><span class="label" id="setlists-label">Setlists</span></div>
+      <ul class="list setlists" id="setlists"></ul>
+    </section>
+
+    <section class="card" aria-labelledby="songs-label">
+      <div class="card-head">
+        <span class="label" id="songs-label">Songs</span>
+        <div class="setlist-tools">
+          <button class="quiet" id="rename-setlist">Rename</button>
+          <button class="quiet danger" id="delete-setlist">Delete</button>
+        </div>
+      </div>
+      <input type="text" id="search" placeholder="Search songs" aria-label="Search songs">
+      <ol class="list songs" id="songs"></ol>
+    </section>
+    <div class="backup-tools">
+      <button class="quiet" id="backup">Back up library</button>
+      <button class="quiet" id="restore">Restore a backup</button>
+    </div>
+    <div class="toast" id="storage-note" role="status"></div>
+  </aside>
+
+  <main class="main" id="main">
+    <section class="song-head" id="song-head">
+      <div class="song-title">
+        <h1 id="title" dir="auto"></h1>
+        <span class="by" id="artist" dir="auto"></span>
+      </div>
+      <div class="toolbar">
+        <div class="group" role="group" aria-label="Transpose">
+          <button id="down" aria-label="Down a semitone">−1</button>
+          <span class="key" id="key" aria-live="polite"></span>
+          <button id="up" aria-label="Up a semitone">+1</button>
+        </div>
+        <div class="group">
+          <label class="label" for="spelling">Accidentals</label>
+          <select id="spelling">
+            <option value="auto">Auto</option>
+            <option value="sharp">Sharps ♯</option>
+            <option value="flat">Flats ♭</option>
+          </select>
+        </div>
+        <button id="reset">Original key</button>
+        <div class="group" role="group" aria-label="Text size">
+          <button id="smaller" aria-label="Smaller text">A−</button>
+          <button id="bigger" aria-label="Bigger text">A+</button>
+        </div>
+        <span class="capo" id="capo"></span>
+      </div>
+      <div class="note" id="note" hidden></div>
+      <div class="actions">
+        <button class="quiet" id="edit">Edit</button>
+        <button class="quiet" id="copy">Copy text</button>
+        <button class="quiet" id="move-up">Move up</button>
+        <button class="quiet" id="move-down">Move down</button>
+        <button class="quiet" id="merge" title="Join with the next song, if one song was split in two">Join with next song</button>
+        <button class="quiet danger" id="delete-song">Delete song</button>
+      </div>
+      <div class="toast" id="toast" role="status"></div>
+    </section>
+    <section class="sheet-card">
+      <div class="stage-title" id="stage-heading"><strong id="stage-song" dir="auto"></strong><span id="stage-artist" dir="auto"></span><span id="stage-capo"></span></div>
+      <div class="sheet" id="sheet"></div>
+    </section>
+  </main>
+</div>
+
+<dialog id="import-dialog" aria-labelledby="import-title">
+  <form class="dialog-body" method="dialog" id="import-form">
+    <h2 id="import-title">Add songs</h2>
+    <p>Paste one or many songs, or choose files (.txt, ChordPro, PDF, Word). You can also drag files onto the page at any time. Each file becomes its own setlist.</p>
+    <div class="field">
+      <label class="label" for="import-name">Setlist name</label>
+      <input type="text" id="import-name" placeholder="For example: Friday gig">
+    </div>
+    <textarea id="import-text" spellcheck="false" aria-label="Songs text" placeholder="Paste songs here"></textarea>
+    <div class="toast" id="import-status" role="status"></div>
+    <div class="dialog-actions">
+      <label class="file" for="import-files">Choose files<input id="import-files" type="file" multiple accept=".txt,.cho,.chopro,.chordpro,.crd,.pdf,.docx,.html,.htm,text/plain"></label>
+      <span class="spacer"></span>
+      <button type="button" id="import-cancel">Cancel</button>
+      <button type="submit" class="primary" id="import-add">Add to library</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="edit-dialog" aria-labelledby="edit-title">
+  <form class="dialog-body" method="dialog" id="edit-form">
+    <h2 id="edit-title">Edit song</h2>
+    <div class="fields">
+      <div class="field"><label class="label" for="edit-song-title">Title</label><input type="text" id="edit-song-title" dir="auto"></div>
+      <div class="field"><label class="label" for="edit-artist">Artist</label><input type="text" id="edit-artist" dir="auto"></div>
+      <div class="field length-field"><label class="label" for="edit-length">Length (sets scroll speed)</label><input type="text" id="edit-length" inputmode="numeric" placeholder="3:30"></div>
+    </div>
+    <textarea id="edit-text" spellcheck="false" aria-label="Song text" dir="auto"></textarea>
+    <p>This is the song in its original key. To split two songs that were read as one, put the cursor on the second song's title line and choose Split here.</p>
+    <div class="dialog-actions">
+      <button type="button" id="edit-split">Split here</button>
+      <span class="spacer"></span>
+      <button type="button" id="edit-cancel">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<nav class="stage-bar" aria-label="Stage controls">
+  <button id="stage-exit">Studio</button>
+  <div class="group" role="group" aria-label="Song">
+    <button id="stage-prev" aria-label="Previous song">◀</button>
+    <span class="pos" id="stage-pos"></span>
+    <button id="stage-next" aria-label="Next song">▶</button>
+  </div>
+  <span class="sep"></span>
+  <div class="group" role="group" aria-label="Transpose">
+    <button id="stage-down" aria-label="Down a semitone">−1</button>
+    <span class="key" id="stage-key" aria-live="polite"></span>
+    <button id="stage-up" aria-label="Up a semitone">+1</button>
+  </div>
+  <select id="stage-spelling" aria-label="Accidentals">
+    <option value="auto">Auto</option>
+    <option value="sharp">Sharps ♯</option>
+    <option value="flat">Flats ♭</option>
+  </select>
+  <span class="sep"></span>
+  <div class="group" role="group" aria-label="Auto-scroll">
+    <button id="scroll-play" aria-pressed="false">▶ Scroll</button>
+    <button id="scroll-faster" aria-label="Faster: song 10 seconds shorter">−</button>
+    <button class="length" id="scroll-length" title="Song length. Tap to type one, like 3:45"></button>
+    <button id="scroll-slower" aria-label="Slower: song 10 seconds longer">+</button>
+  </div>
+  <div class="group" role="group" aria-label="Text size">
+    <button id="stage-smaller" aria-label="Smaller text">A−</button>
+    <button id="stage-bigger" aria-label="Bigger text">A+</button>
+  </div>
+  <button id="stage-full">Full screen</button>
+</nav>
+
+<dialog id="backup-dialog" aria-labelledby="backup-title">
+  <form class="dialog-body" method="dialog" id="backup-form">
+    <h2 id="backup-title">Back up library</h2>
+    <p>This is your whole library: every setlist and song, with its key and length. Save it as a file, or copy it, and use Restore a backup to bring it into the app on another device or browser.</p>
+    <textarea id="backup-text" readonly spellcheck="false" aria-label="Backup"></textarea>
+    <div class="toast" id="backup-status" role="status"></div>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button type="button" id="backup-close">Close</button>
+      <button type="button" id="backup-copy">Copy</button>
+      <button type="button" class="primary" id="backup-download">Save file</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="restore-dialog" aria-labelledby="restore-title">
+  <form class="dialog-body" method="dialog" id="restore-form">
+    <h2 id="restore-title">Restore a backup</h2>
+    <p>Choose a backup file, or paste a copied backup. Its setlists are added to your library; nothing you already have is removed.</p>
+    <textarea id="restore-text" spellcheck="false" aria-label="Backup text" placeholder="Paste a backup here"></textarea>
+    <div class="toast" id="restore-status" role="status"></div>
+    <div class="dialog-actions">
+      <label class="file" for="restore-file">Choose backup file<input id="restore-file" type="file" accept=".json,application/json"></label>
+      <span class="spacer"></span>
+      <button type="button" id="restore-cancel">Cancel</button>
+      <button type="submit" class="primary">Restore</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="drop-overlay" aria-hidden="true"><span>Drop files to add them as setlists</span></div>
+
+<script type="module" src="app.js"></script>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>

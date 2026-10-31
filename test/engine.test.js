@@ -181,3 +181,54 @@ test('backs up and restores the library', async () => {
   assert.deepEqual(restoreBackup(b, exportLibrary(a)), { setlists: 0, songs: 0 });
   assert.equal(restoreBackup(b, 'not a backup'), null);
 });
+
+test('recognises tunings written in songs', async () => {
+  const { tuningFromText, splitNotes, tuningFromTabLabels } = await import('../src/tuning.js');
+  assert.deepEqual(splitNotes('CGCGGe'), ['C', 'G', 'C', 'G', 'G', 'e']);
+  assert.deepEqual(splitNotes('EADGbe'), ['E', 'A', 'D', 'G', 'b', 'e']);
+  assert.deepEqual(splitNotes('Eb Ab Db Gb Bb Eb'), ['Eb', 'Ab', 'Db', 'Gb', 'Bb', 'Eb']);
+  assert.deepEqual(tuningFromText(['"Open C" tuning:', 'tuning low to high CGCGGe']).pitches, [36, 43, 48, 55, 55, 64]);
+  assert.equal(tuningFromText(['Tuning: Drop D']).id, 'drop-d');
+  assert.equal(tuningFromText(['Tuning: D A D G B E']).id, 'drop-d');
+  assert.equal(tuningFromText(['Tuned half step down']).id, 'half-down');
+  assert.equal(tuningFromText(['Open G tuning (D G D G B D)']).id, 'open-g');
+  assert.equal(tuningFromText(['Am  G  C']), null);
+  assert.equal(tuningFromTabLabels(['D|--', 'A|--', 'F#|--', 'D|--', 'A|--', 'D|--']).id, 'open-d');
+});
+
+test('moves tabs from another tuning to standard at the same pitch', async () => {
+  const { namedTuning, retuneTabBlock } = await import('../src/tuning.js');
+  const std = namedTuning('standard');
+  // Drop D: the low string's open D is doubled an octave up on the D string, so it is played there once.
+  const dropD = retuneTabBlock(['e|-----|', 'B|-----|', 'G|-----|', 'D|--0--|', 'A|--0--|', 'D|--0--|'], namedTuning('drop-d'), std);
+  assert.deepEqual(dropD.lines, ['e|-----|', 'B|-----|', 'G|-----|', 'D|--0--|', 'A|--0--|', 'E|-----|']);
+  assert.equal(dropD.merged, 1);
+  // Drop D fret 5 (G2) is fret 3 in standard; widths change are kept aligned.
+  const riff = retuneTabBlock(['e|---|', 'B|---|', 'G|---|', 'D|---|', 'A|---|', 'D|-5-|'], namedTuning('drop-d'), std);
+  assert.equal(riff.lines[5], 'E|-3-|');
+  // Open C: the low C is below a standard guitar, so it is played an octave up.
+  const openC = retuneTabBlock(['e|-0-|', 'C|---|', 'G|---|', 'C|---|', 'G|---|', 'C|-0-|'], namedTuning('open-c'), std);
+  assert.deepEqual(openC.lines.map((l) => l.slice(0, 5)), ['e|-0-', 'B|---', 'G|---', 'D|---', 'A|---', 'E|-8-']);
+  assert.equal(openC.octave, 1);
+  // Open C: the C on the 4th string goes to the A string, at fret 3.
+  const fourth = retuneTabBlock(['e|---|', 'C|---|', 'G|---|', 'C|-0-|', 'G|---|', 'C|---|'], namedTuning('open-c'), std);
+  assert.equal(fourth.lines[4], 'A|-3-|');
+  assert.equal(fourth.moved, 1);
+  // A note getting wider widens every string at that point.
+  const wide = retuneTabBlock(['e|-9-|', 'B|---|', 'G|---|', 'D|---|', 'A|---|', 'D|-9-|'], namedTuning('drop-d'), std);
+  assert.deepEqual(wide.lines.map((l) => l.length), [6, 6, 6, 6, 6, 6].map((n) => n));
+});
+
+test('converts a whole song, with chord shapes for songs tuned down', async () => {
+  const { namedTuning } = await import('../src/tuning.js');
+  const song = parseSong('Tuning: half step down\n\nE        A\nla la la la');
+  assert.equal(song.tuning.id, 'half-down');
+  const asShapes = transposeSong(song, 0, 'auto', { from: song.tuning, to: namedTuning('standard'), shapes: true });
+  assert.equal(asShapes.lines.find((l) => l.type === 'chords').text, 'Eb       Ab');
+  const asNotes = transposeSong(song, 0, 'auto', { from: song.tuning, to: namedTuning('standard'), shapes: false });
+  assert.equal(asNotes.lines.find((l) => l.type === 'chords').text, 'E        A');
+});
+
+test('keeps tab lines that end with a comment', () => {
+  assert.equal(classifyLine('G|--------------3-3-3/5-5-5---| repeat twice').type, 'tab');
+});

@@ -111,6 +111,11 @@
   .group { display: inline-flex; align-items: center; gap: 6px; }
   .key { font-family: var(--font-mono); font-weight: 600; color: var(--chord); min-width: 6.5em; text-align: center; font-variant-numeric: tabular-nums; }
   .capo { color: var(--muted); font-size: 0.85rem; }
+  .tuning-row { padding-top: 2px; }
+  #tuning-from { max-width: 16em; }
+  #tuning-custom { width: 15em; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--muted); cursor: pointer; }
+  .check input { width: 1.05em; height: 1.05em; accent-color: var(--accent); }
   .actions { display: flex; flex-wrap: wrap; gap: 4px; border-top: 1px solid var(--line); padding-top: 10px; }
   .note { font-size: 0.85rem; color: var(--warn); }
   .toast { font-size: 0.85rem; color: var(--accent); }
@@ -247,6 +252,21 @@
         </div>
         <span class="capo" id="capo"></span>
       </div>
+      <div class="toolbar tuning-row" role="group" aria-label="Tuning">
+        <div class="group">
+          <label class="label" for="tuning-from">Written in</label>
+          <select id="tuning-from"></select>
+          <input type="text" id="tuning-custom" placeholder="Low to high, e.g. C G C G G E" aria-label="Tuning, low string to high" hidden>
+        </div>
+        <div class="group">
+          <label class="label" for="tuning-play">Play in</label>
+          <select id="tuning-play">
+            <option value="written">Written tuning</option>
+            <option value="standard">Standard tuning</option>
+          </select>
+        </div>
+        <label class="check" id="shapes-wrap" title="In songs tuned down a half or whole step, chords are usually written as the shapes you hold. Tick this to change them to the notes that sound, for standard tuning."><input type="checkbox" id="tuning-shapes"> Chord names are shapes</label>
+      </div>
       <div class="note" id="note" hidden></div>
       <div class="actions">
         <button class="quiet" id="edit">Edit</button>
@@ -316,6 +336,10 @@
     <span class="key" id="stage-key" aria-live="polite"></span>
     <button id="stage-up" aria-label="Up a semitone">+1</button>
   </div>
+  <select id="stage-tuning" aria-label="Tuning">
+    <option value="written">Written tuning</option>
+    <option value="standard">Standard tuning</option>
+  </select>
   <select id="stage-spelling" aria-label="Accidentals">
     <option value="auto">Auto</option>
     <option value="sharp">Sharps ♯</option>

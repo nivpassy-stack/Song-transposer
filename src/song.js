@@ -6,6 +6,9 @@ import {
   classifyLine, chordLineTokens, parseDirective, splitInlineChords, countHebrew, countLatin,
 } from './lines.js';
 import { transposeTabBlock } from './tabs.js';
+import {
+  tuningFromText, tuningFromTabLabels, retuneTabBlock, uniformOffset,
+} from './tuning.js';
 
 /**
  * Clean up text before parsing: unify line endings, expand tab characters so
@@ -79,8 +82,24 @@ export function parseSongLines(rawLines, info = {}) {
   const titleCapo = /(?:capo|קאפו)\s*(\d{1,2})/i.exec(song.title);
   if (titleCapo && song.capo === null) song.capo = Number(titleCapo[1]);
   song.dir = detectDirection(song);
+  song.tuning = detectTuning(rawLines, song.lines);
   song.key = song.statedKey || detectKey(songChords(song));
   return song;
+}
+
+/**
+ * The tuning a song is written for: from a line that names it, or else from
+ * the string names of its first tab. Null means it gives no tuning (usually standard).
+ */
+function detectTuning(rawLines, lines) {
+  const fromText = tuningFromText(rawLines);
+  if (fromText) return fromText;
+  const firstTab = [];
+  for (const line of lines) {
+    if (line.type === 'tab') firstTab.push(line.text);
+    else if (firstTab.length) break;
+  }
+  return tuningFromTabLabels(firstTab);
 }
 
 export function parseSong(text, info) {
@@ -136,10 +155,18 @@ export function rebuildChordLine(tokens, mapChord) {
 /**
  * Transpose a song by a number of semitones.
  * spelling: 'auto' (sharps or flats to suit the new key), 'sharp' or 'flat'.
+ * retune: optionally {from, to, shapes} to move the song to another tuning.
+ *   Tab notes keep their pitch on the new tuning. Chord names stay the same
+ *   (they name the notes that sound), unless `shapes` says they name the
+ *   shapes held in the old tuning, as is usual for songs tuned down a half
+ *   or whole step; then they move by the difference between the tunings.
  * Returns a new song; the original is not changed.
  */
-export function transposeSong(song, semitones, spelling = 'auto') {
-  const n = ((semitones % 12) + 12) % 12;
+export function transposeSong(song, semitones, spelling = 'auto', retune = null) {
+  const retuning = retune && retune.from && retune.to && retune.from.id !== retune.to.id ? retune : null;
+  const shapeShift = retuning && retuning.shapes ? uniformOffset(retuning.from) - uniformOffset(retuning.to) : 0;
+  const tabN = ((semitones % 12) + 12) % 12;
+  const n = (((semitones + shapeShift) % 12) + 12) % 12;
   const key = transposeKey(song.key, n);
   const useFlats = chooseFlats(spelling, key);
   // With no shift and automatic spelling, keep the chords exactly as written.
@@ -147,6 +174,7 @@ export function transposeSong(song, semitones, spelling = 'auto') {
   const mapChord = (piece) => (keepAsWritten ? piece.text : transposeParsed(piece.chord, n, useFlats));
   const lines = [];
   const notes = [];
+  const tuningReport = { moved: 0, octave: 0, merged: 0, skipped: 0 };
   for (let i = 0; i < song.lines.length; i++) {
     const line = song.lines[i];
     if (line.type === 'chords') {
@@ -155,9 +183,18 @@ export function transposeSong(song, semitones, spelling = 'auto') {
     } else if (line.type === 'tab') {
       let j = i;
       while (j < song.lines.length && song.lines[j].type === 'tab') j++;
+      let tabLines = song.lines.slice(i, j).map((l) => l.text);
+      if (retuning) {
+        const moved = retuneTabBlock(tabLines, retuning.from, retuning.to);
+        tabLines = moved.lines;
+        tuningReport.moved += moved.moved;
+        tuningReport.octave += moved.octave;
+        tuningReport.merged += moved.merged;
+        if (moved.skipped) tuningReport.skipped++;
+      }
       // Tabs shift by the smallest move, up or down, unless that needs negative frets.
-      const tabSemitones = n > 6 ? n - 12 : n;
-      const block = transposeTabBlock(song.lines.slice(i, j).map((l) => l.text), tabSemitones);
+      const tabSemitones = tabN > 6 ? tabN - 12 : tabN;
+      const block = transposeTabBlock(tabLines, tabSemitones);
       if (block.octave) notes.push({ line: i, octave: block.octave });
       for (const text of block.lines) lines.push({ type: 'tab', text });
       i = j - 1;
@@ -165,7 +202,10 @@ export function transposeSong(song, semitones, spelling = 'auto') {
       lines.push(line);
     }
   }
-  return { ...song, lines, key, semitones: n, useFlats, notes };
+  return {
+    ...song, lines, key, semitones: n, useFlats, notes,
+    retuned: retuning ? { from: retuning.from, to: retuning.to, shapeShift, ...tuningReport } : null,
+  };
 }
 
 /** Key name for display, spelled to suit the key. */

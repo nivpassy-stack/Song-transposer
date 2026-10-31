@@ -3,6 +3,7 @@ import {
   splitSongs, parseSong, transposeSong, keyName, songToText, readFileText,
   loadLibrary, saveLibrary, addSetlist, updateSong, deleteSong, deleteSetlist,
   moveSong, mergeWithNext, splitAt, exportLibrary, restoreBackup,
+  NAMED_TUNINGS, namedTuning, tuningFromNotes, splitNotes, uniformOffset,
 } from './src/index.js';
 import { renderSheet } from './src/render.js';
 
@@ -74,9 +75,29 @@ function parsed(record) {
   return parsedCache.get(cacheKey);
 }
 
-function shown(record) {
-  return transposeSong(parsed(record), record.semitones, record.spelling);
+// Tuning: the song's own (as found in it, or as set by hand), and whether to play it in standard.
+const STANDARD_TUNING = namedTuning('standard');
+
+function songTuning(record) {
+  if (record.tuningNotes) return tuningFromNotes(record.tuningNotes.split(' ')) || STANDARD_TUNING;
+  return parsed(record).tuning || STANDARD_TUNING;
 }
+
+function retuneFor(record) {
+  const from = songTuning(record);
+  if (record.playIn !== 'standard' || from.id === 'standard') return null;
+  // Songs tuned down evenly usually name chord shapes; others name the notes that sound.
+  const shapes = record.chordShapes ?? uniformOffset(from) !== 0;
+  return { from, to: STANDARD_TUNING, shapes };
+}
+
+function shown(record) {
+  return transposeSong(parsed(record), record.semitones, record.spelling, retuneFor(record));
+}
+
+const tuningLabel = (t) => (t.id === 'standard' || NAMED_TUNINGS.some((n) => n.id === t.id)
+  ? `${t.name} (${t.notes.join(' ')})`
+  : t.notes.join(' '));
 
 const DEFAULT_LENGTH = 210; // 3:30
 
@@ -105,9 +126,11 @@ function selectSetlist(id) {
   render();
 }
 
-function importText(text, name) {
+function importText(text, name, titleFromFile = '') {
   const songs = splitSongs(text);
   if (!songs.length) return null;
+  // A file holding one untitled song is named after the file.
+  if (titleFromFile && songs.length === 1 && /^Song \d+$/.test(songs[0].title)) songs[0].title = titleFromFile;
   const setlist = addSetlist(library, name, songs);
   persist();
   ui.setlistId = setlist.id;
@@ -126,7 +149,7 @@ async function importFiles(files, statusEl) {
     if (statusEl) statusEl.textContent = `Reading ${file.name}…`;
     try {
       const text = await readFileText(file);
-      const setlist = importText(text, fileBaseName(file.name));
+      const setlist = importText(text, fileBaseName(file.name), fileBaseName(file.name));
       if (setlist) added.push(`${setlist.name} (${setlist.songIds.length} songs)`);
       else failed.push(`${file.name}: no songs found`);
     } catch (err) {
@@ -211,6 +234,8 @@ function renderSong() {
     $('capo').textContent = '';
     $('note').hidden = true;
     controls.forEach((c) => { c.disabled = true; });
+    $('stage-tuning').hidden = true;
+    $('shapes-wrap').hidden = true;
     const empty = el('p', 'empty-state', 'Add songs to start: paste them, choose files, or drag a file (text, ChordPro, PDF or Word) onto the page. A file with many songs becomes a setlist, and every song can be moved to a new key on its own.');
     $('sheet').replaceChildren(empty);
     $('stage-song').textContent = '';
@@ -226,7 +251,7 @@ function renderSong() {
   $('artist').textContent = record.artist;
   const from = keyName(original.key);
   const to = keyName(song.key, song.useFlats);
-  $('key').textContent = record.semitones ? `${from} → ${to}` : `Key ${to || '?'}`;
+  $('key').textContent = keyLabel(record.semitones, from, to);
   $('capo').textContent = original.capo ? `Capo ${original.capo}` : '';
   $('spelling').value = record.spelling;
   $('reset').disabled = !record.semitones;
@@ -234,16 +259,62 @@ function renderSong() {
   $('move-up').disabled = index <= 0;
   $('move-down').disabled = index < 0 || index >= list.songIds.length - 1;
   $('merge').disabled = index < 0 || index >= list.songIds.length - 1;
+  renderTuning(record, song);
+  const messages = [];
+  if (song.notes.length) messages.push('Some tab parts were moved up an octave, because moving them down would need frets below the open string.');
+  if (song.retuned) messages.push(retuneSummary(song.retuned));
   const note = $('note');
-  note.hidden = !song.notes.length;
-  note.textContent = song.notes.length
-    ? 'Some tab parts were moved up an octave, because moving them down would need frets below the open string.'
-    : '';
+  note.hidden = !messages.length;
+  note.textContent = messages.join(' ');
   $('stage-heading').dir = song.dir;
   $('stage-song').textContent = record.title;
   $('stage-artist').textContent = record.artist;
   $('stage-capo').textContent = original.capo ? `Capo ${original.capo}` : '';
   renderSheet($('sheet'), song);
+}
+
+// Tab-only songs have no chords, so no key to show.
+function keyLabel(semitones, from, to) {
+  if (!to) {
+    if (!semitones) return 'No chords';
+    const n = semitones > 6 ? semitones - 12 : semitones;
+    return `${n > 0 ? '+' : ''}${n} semitone${Math.abs(n) === 1 ? '' : 's'}`;
+  }
+  return semitones ? `${from} → ${to}` : `Key ${to}`;
+}
+
+function retuneSummary(r) {
+  const parts = [`Tabs moved from ${r.from.notes.join(' ')} to standard tuning, every note at the same pitch.`];
+  if (r.moved) parts.push(`${r.moved} note${r.moved === 1 ? '' : 's'} moved to a thicker string.`);
+  if (r.merged) parts.push(`${r.merged} doubled note${r.merged === 1 ? '' : 's'} (played on two strings in the old tuning) now played once.`);
+  if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than a standard guitar goes, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
+  if (r.skipped) parts.push('Tabs that are not six strings were left as written.');
+  if (r.shapeShift) parts.push(`Chords moved ${Math.abs(r.shapeShift)} semitone${Math.abs(r.shapeShift) === 1 ? '' : 's'} ${r.shapeShift < 0 ? 'down' : 'up'}, from shapes to the notes that sound.`);
+  return parts.join(' ');
+}
+
+function renderTuning(record, song) {
+  const from = songTuning(record);
+  const select = $('tuning-from');
+  const options = NAMED_TUNINGS.map((t) => [t.id, tuningLabel(namedTuning(t.id))]);
+  if (!NAMED_TUNINGS.some((t) => t.id === from.id)) options.push([from.id, from.notes.join(' ')]);
+  options.push(['custom', 'Other tuning…']);
+  select.replaceChildren(...options.map(([value, label]) => {
+    const o = el('option', '', label);
+    o.value = value;
+    return o;
+  }));
+  select.value = from.id;
+  $('tuning-play').value = record.playIn === 'standard' ? 'standard' : 'written';
+  $('tuning-play').disabled = from.id === 'standard';
+  const uneven = uniformOffset(from) === 0;
+  $('shapes-wrap').hidden = uneven || from.id === 'standard' || record.playIn !== 'standard';
+  $('tuning-shapes').checked = Boolean(song.retuned && song.retuned.shapes);
+  // Stage shows the choice only for songs in another tuning.
+  $('stage-tuning').hidden = from.id === 'standard';
+  $('stage-tuning').value = $('tuning-play').value;
+  $('stage-tuning').options[0].textContent = `${from.name === from.notes.join(' ') ? from.notes.join(' ') : from.name} tuning`;
+  $('tuning-play').options[0].textContent = `Written tuning (${from.notes.join(' ')})`;
 }
 
 const STAGE_CONTROLS = ['stage-prev', 'stage-next', 'stage-down', 'stage-up', 'stage-spelling', 'scroll-play', 'scroll-slower', 'scroll-faster', 'scroll-length', 'stage-picker'];
@@ -259,7 +330,7 @@ function renderStageBar(record, list) {
   const song = shown(record);
   const from = keyName(parsed(record).key);
   const to = keyName(song.key, song.useFlats);
-  $('stage-key').textContent = record.semitones ? `${from} → ${to}` : `Key ${to || '?'}`;
+  $('stage-key').textContent = keyLabel(record.semitones, from, to);
   $('stage-spelling').value = record.spelling;
   const index = list ? list.songIds.indexOf(record.id) : -1;
   // Song picker: every song in the setlist, numbered.
@@ -506,6 +577,43 @@ document.addEventListener('drop', (e) => {
   if (importDialog.open) importDialog.close();
   importFiles(e.dataTransfer.files);
 });
+
+// Tuning controls
+$('tuning-from').addEventListener('change', (e) => {
+  if (e.target.value === 'custom') {
+    const input = $('tuning-custom');
+    input.hidden = false;
+    input.value = songTuning(currentSong()).notes.join(' ');
+    input.focus();
+    input.select();
+    return;
+  }
+  const named = NAMED_TUNINGS.find((t) => t.id === e.target.value);
+  if (named) changeSong({ tuningNotes: named.notes });
+});
+function saveCustomTuning() {
+  const input = $('tuning-custom');
+  if (input.hidden) return;
+  const notes = splitNotes(input.value);
+  const tuning = notes && tuningFromNotes(notes);
+  input.hidden = true;
+  if (tuning) changeSong({ tuningNotes: tuning.notes.join(' ') });
+  else {
+    toast('Write six notes from the low string to the high one, like C G C G G E.');
+    render();
+  }
+}
+$('tuning-custom').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') saveCustomTuning();
+  if (e.key === 'Escape') { $('tuning-custom').hidden = true; render(); }
+});
+$('tuning-custom').addEventListener('blur', saveCustomTuning);
+$('tuning-play').addEventListener('change', (e) => changeSong({ playIn: e.target.value }));
+$('stage-tuning').addEventListener('change', (e) => {
+  changeSong({ playIn: e.target.value });
+  e.target.blur();
+});
+$('tuning-shapes').addEventListener('change', (e) => changeSong({ chordShapes: e.target.checked }));
 
 // Backup and restore
 const backupDialog = $('backup-dialog');

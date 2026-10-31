@@ -86,7 +86,10 @@ const TAB_ALLOWED_RE = /^[-–—0-9|hpbrstvx/\\~()<>.^*=:\s'"HPBRSTVX]+$/;
 
 export function isTabLine(line) {
   const m = /^\s*([A-Ga-g][#b]?)?\s*([|:]?)(.*)$/.exec(line);
-  const [, label, bar, body] = m;
+  const [, label, bar, rest] = m;
+  // Notes after the last bar line ("|  repeat twice") don't stop it being a tab line.
+  const lastBar = rest.lastIndexOf('|');
+  const body = lastBar > 0 && /[A-Za-z]/.test(rest.slice(lastBar + 1)) ? rest.slice(0, lastBar + 1) : rest;
   const trimmed = body.trim();
   if (trimmed.length < 6 || !TAB_ALLOWED_RE.test(trimmed)) return false;
   const dashes = (trimmed.match(/[-–—]/g) || []).length;

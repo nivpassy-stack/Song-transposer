@@ -76,9 +76,37 @@ function parsed(record) {
   return parsedCache.get(cacheKey);
 }
 
-// Tuning: the song's own (as found in it, or as set by hand), and whether to play it in standard
-// (guitar standard, or bass standard with the same number of strings).
+// Tuning: the song's own (as found in it, or as set by hand), and the tuning to play it in.
+// record.playIn is 'written', 'standard', 'mine' (the player's own tuning for this
+// instrument, kept in prefs.myTunings) or 'tuning:<notes>' for any other tuning.
+// Songs that were never set use the player's own tuning, if there is one.
 const STANDARD_TUNING = namedTuning('standard');
+
+const instrumentKey = (t) => `${t.instrument}-${t.strings}`;
+function instrumentName(t) {
+  if (t.instrument !== 'bass') return 'guitar';
+  return t.strings === 4 ? 'bass' : `${t.strings}-string bass`;
+}
+const sameInstrument = (a, b) => a && b && a.instrument === b.instrument && a.strings === b.strings;
+const notesOf = (text) => (text ? tuningFromNotes(text.split(' ')) : null);
+
+function myTuning(from) {
+  const mine = notesOf((library.prefs.myTunings || {})[instrumentKey(from)]);
+  return sameInstrument(mine, from) ? mine : null;
+}
+
+/** The tuning a song is played in, and which choice of the "Play in" menu that is. */
+function playTarget(record) {
+  const from = songTuning(record);
+  const choice = record.playIn || 'mine';
+  if (choice === 'standard') return { choice, to: standardTuning(from) };
+  if (choice.startsWith('tuning:')) {
+    const to = notesOf(choice.slice(7));
+    if (sameInstrument(to, from)) return { choice, to };
+  }
+  if (choice === 'mine' && myTuning(from)) return { choice, to: myTuning(from) };
+  return { choice: 'written', to: from };
+}
 
 function songTuning(record) {
   if (record.tuningNotes) return tuningFromNotes(record.tuningNotes.split(' ')) || STANDARD_TUNING;
@@ -87,10 +115,11 @@ function songTuning(record) {
 
 function retuneFor(record) {
   const from = songTuning(record);
-  if (record.playIn !== 'standard' || isStandardTuning(from)) return null;
+  const { to } = playTarget(record);
+  if (to.id === from.id) return null;
   // Songs tuned down evenly usually name chord shapes; others name the notes that sound.
   const shapes = record.chordShapes ?? uniformOffset(from) !== 0;
-  return { from, to: standardTuning(from), shapes };
+  return { from, to, shapes };
 }
 
 function shown(record) {
@@ -238,6 +267,7 @@ function renderSong() {
     controls.forEach((c) => { c.disabled = true; });
     $('stage-tuning').hidden = true;
     $('shapes-wrap').hidden = true;
+    $('mine-wrap').hidden = true;
     const empty = el('p', 'empty-state', 'Add songs to start: paste them, choose files, or drag a file (text, ChordPro, PDF or Word) onto the page. A file with many songs becomes a setlist, and every song can be moved to a new key on its own.');
     $('sheet').replaceChildren(empty);
     $('stage-song').textContent = '';
@@ -287,12 +317,11 @@ function keyLabel(semitones, from, to) {
 }
 
 function retuneSummary(r) {
-  const bass = r.to.instrument === 'bass';
-  const target = bass ? `${r.to.name.toLowerCase()} tuning (${r.to.notes.join(' ')})` : 'standard tuning';
+  const target = r.to.id === 'standard' ? 'standard tuning' : tuningLabel(r.to);
   const parts = [`Tabs moved from ${r.from.notes.join(' ')} to ${target}, every note at the same pitch.`];
   if (r.moved) parts.push(`${r.moved} note${r.moved === 1 ? '' : 's'} moved to a thicker string.`);
   if (r.merged) parts.push(`${r.merged} doubled note${r.merged === 1 ? '' : 's'} (played on two strings in the old tuning) now played once.`);
-  if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than a standard ${bass ? 'bass' : 'guitar'} goes, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
+  if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than the low ${r.to.notes[0]} string, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
   if (r.skipped) parts.push(`Tabs that are not ${r.from.pitches.length} strings were left as written.`);
   if (r.shapeShift) parts.push(`Chords moved ${Math.abs(r.shapeShift)} semitone${Math.abs(r.shapeShift) === 1 ? '' : 's'} ${r.shapeShift < 0 ? 'down' : 'up'}, from shapes to the notes that sound.`);
   return parts.join(' ');
@@ -317,19 +346,50 @@ function renderTuning(record, song) {
   extra.push(option(['custom', 'Other tuning…']));
   select.replaceChildren(group('Guitar', 'guitar'), group('Bass', 'bass'), ...extra);
   select.value = from.id;
-  const standard = isStandardTuning(from);
-  $('tuning-play').value = record.playIn === 'standard' ? 'standard' : 'written';
-  $('tuning-play').disabled = standard;
-  const uneven = uniformOffset(from) === 0;
-  $('shapes-wrap').hidden = uneven || standard || record.playIn !== 'standard';
+  renderPlayIn(record, song, from);
+}
+
+/**
+ * The "Play in" menu: the written tuning, the player's own tuning, standard,
+ * every named tuning for the same instrument, and any other tuning.
+ */
+function playOptions(record, from, short) {
+  const { choice, to } = playTarget(record);
+  const mine = myTuning(from);
+  const std = standardTuning(from);
+  const options = [['written', short ? `${from.notes.join(' ')} (written)` : `Written tuning (${from.notes.join(' ')})`]];
+  if (mine) options.push(['mine', `My ${instrumentName(from)} tuning (${mine.notes.join(' ')})`]);
+  options.push(['standard', short ? `Standard (${std.notes.join(' ')})` : tuningLabel(std)]);
+  const named = NAMED_TUNINGS.filter((t) => t.id !== std.id).map((t) => namedTuning(t.id)).filter((t) => sameInstrument(t, from));
+  for (const t of named) options.push([`tuning:${t.notes.join(' ')}`, tuningLabel(t)]);
+  if (choice.startsWith('tuning:') && !options.some(([v]) => v === choice)) options.push([choice, to.notes.join(' ')]);
+  if (!short) options.push(['custom', 'Other tuning…']);
+  return { options, value: choice };
+}
+
+function renderPlayIn(record, song, from) {
+  const fill = (select, short) => {
+    const { options, value } = playOptions(record, from, short);
+    select.replaceChildren(...options.map(([v, label]) => {
+      const o = el('option', '', label);
+      o.value = v;
+      return o;
+    }));
+    select.value = value;
+  };
+  fill($('tuning-play'), false);
+  fill($('stage-tuning'), true);
+  const { choice, to } = playTarget(record);
+  const playing = choice !== 'written' && to.id !== from.id;
+  $('shapes-wrap').hidden = !playing || uniformOffset(from) === uniformOffset(to);
   $('tuning-shapes').checked = Boolean(song.retuned && song.retuned.shapes);
-  $('tuning-play').options[1].textContent = from.instrument === 'bass' ? `Bass standard (${standardTuning(from).notes.join(' ')})` : 'Standard tuning';
-  $('stage-tuning').options[1].textContent = $('tuning-play').options[1].textContent;
-  // Stage shows the choice only for songs in another tuning.
-  $('stage-tuning').hidden = standard;
-  $('stage-tuning').value = $('tuning-play').value;
-  $('stage-tuning').options[0].textContent = `${from.name === from.notes.join(' ') ? from.notes.join(' ') : from.name} tuning`;
-  $('tuning-play').options[0].textContent = `Written tuning (${from.notes.join(' ')})`;
+  // "My tuning": the tuning this player always uses, for every song on this instrument.
+  const mine = myTuning(from);
+  $('mine-wrap').hidden = choice === 'written' && !mine;
+  $('mine-label').textContent = `Always play ${instrumentName(from)} songs in ${choice === 'written' && mine ? mine.notes.join(' ') : to.notes.join(' ')}`;
+  $('tuning-mine').checked = Boolean(mine && (choice === 'mine' || choice === 'written' || mine.id === to.id));
+  // Stage shows the choice only when there is more than one way to play the song.
+  $('stage-tuning').hidden = isStandardTuning(from) && !mine && choice === 'written';
 }
 
 const STAGE_CONTROLS = ['stage-prev', 'stage-next', 'stage-down', 'stage-up', 'stage-spelling', 'scroll-play', 'scroll-slower', 'scroll-faster', 'scroll-length', 'stage-picker'];
@@ -623,10 +683,57 @@ $('tuning-custom').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { $('tuning-custom').hidden = true; render(); }
 });
 $('tuning-custom').addEventListener('blur', saveCustomTuning);
-$('tuning-play').addEventListener('change', (e) => changeSong({ playIn: e.target.value }));
+$('tuning-play').addEventListener('change', (e) => {
+  if (e.target.value === 'custom') {
+    const input = $('play-custom');
+    input.hidden = false;
+    input.value = playTarget(currentSong()).to.notes.join(' ');
+    input.focus();
+    input.select();
+    return;
+  }
+  changeSong({ playIn: e.target.value });
+});
+function savePlayTuning() {
+  const input = $('play-custom');
+  if (input.hidden) return;
+  input.hidden = true;
+  const from = songTuning(currentSong());
+  const notes = splitNotes(input.value);
+  const tuning = notes && tuningFromNotes(notes);
+  if (sameInstrument(tuning, from)) changeSong({ playIn: `tuning:${tuning.notes.join(' ')}` });
+  else {
+    toast(`This song is for ${from.instrument === 'bass' ? `a ${from.strings}-string bass` : 'a guitar'}, so write ${from.strings} notes from the low string to the high one, like ${standardTuning(from).notes.join(' ')}.`);
+    render();
+  }
+}
+$('play-custom').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') savePlayTuning();
+  if (e.key === 'Escape') { $('play-custom').hidden = true; render(); }
+});
+$('play-custom').addEventListener('blur', savePlayTuning);
 $('stage-tuning').addEventListener('change', (e) => {
   changeSong({ playIn: e.target.value });
   e.target.blur();
+});
+$('tuning-mine').addEventListener('change', (e) => {
+  const record = currentSong();
+  if (!record) return;
+  const from = songTuning(record);
+  const tunings = { ...(library.prefs.myTunings || {}) };
+  if (e.target.checked) {
+    const { choice, to } = playTarget(record);
+    const target = choice === 'written' ? myTuning(from) : to;
+    if (target) tunings[instrumentKey(from)] = target.notes.join(' ');
+    library.prefs.myTunings = tunings;
+    changeSong({ playIn: 'mine' });
+  } else {
+    delete tunings[instrumentKey(from)];
+    library.prefs.myTunings = tunings;
+    const { to } = playTarget(record);
+    changeSong({ playIn: record.playIn === 'mine' || !record.playIn ? 'written' : record.playIn });
+    if (to) toast(`Songs no longer default to ${to.notes.join(' ')}.`);
+  }
 });
 $('tuning-shapes').addEventListener('change', (e) => changeSong({ chordShapes: e.target.checked }));
 

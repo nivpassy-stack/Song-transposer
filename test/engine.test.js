@@ -315,3 +315,26 @@ test('moves bass tabs to bass standard tuning, and leaves bass parts of guitar s
   // A bass song that names its tuning.
   assert.equal(parseSong('Tuning: Drop D\nG|-------|\nD|-------|\nA|-------|\nD|--0----|').tuning.id, 'bass-drop-d');
 });
+
+test('plays songs in any tuning, such as a bass kept in drop D', async () => {
+  const { namedTuning, tuningFromNotes } = await import('../src/tuning.js');
+  const dropD = namedTuning('bass-drop-d');
+  // A bass song in standard, played on a drop D bass: low E notes are fret 2 on the D string.
+  const song = parseSong('G|---------|\nD|---------|\nA|-------0-|\nE|--0--3---|');
+  assert.equal(song.tuning.id, 'bass-standard');
+  const played = transposeSong(song, 0, 'auto', { from: song.tuning, to: dropD });
+  assert.deepEqual(played.lines.map((l) => l.text), ['G|---------|', 'D|---------|', 'A|-------0-|', 'D|--2--5---|']);
+  assert.equal(played.retuned.to.id, 'bass-drop-d');
+  // A guitar song in standard, played in a custom tuning.
+  const guitar = parseSong('e|-----|\nB|-----|\nG|-----|\nD|-----|\nA|-----|\nE|--3--|');
+  const openD = tuningFromNotes(['D', 'A', 'D', 'F#', 'A', 'D']);
+  assert.equal(transposeSong(guitar, 0, 'auto', { from: guitar.tuning || namedTuning('standard'), to: openD }).lines[5].text, 'D|--5--|');
+});
+
+test('restores the player\'s own tunings from a backup', async () => {
+  const { exportLibrary, restoreBackup } = await import('../src/library.js');
+  const a = { songs: {}, setlists: [], prefs: { myTunings: { 'bass-4': 'D A D G' } } };
+  const b = { songs: {}, setlists: [], prefs: { myTunings: { 'guitar-6': 'D A D G B E' } } };
+  restoreBackup(b, exportLibrary(a));
+  assert.deepEqual(b.prefs.myTunings, { 'bass-4': 'D A D G', 'guitar-6': 'D A D G B E' });
+});

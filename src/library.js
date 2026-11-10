@@ -138,6 +138,7 @@ export function exportLibrary(library) {
 /**
  * Add a backup's songs and setlists to the library. Setlists already in the
  * library (same id) are skipped, so restoring the same backup twice is safe.
+ * The player's own tunings are restored where this device has none.
  * Returns how many setlists and songs were added, or null if the text is not a backup.
  */
 export function restoreBackup(library, text) {
@@ -160,6 +161,12 @@ export function restoreBackup(library, text) {
     }
     library.setlists.push({ ...list, songIds });
     setlists++;
+  }
+  // The player's own tunings ("always play bass songs in D A D G") come back too,
+  // without replacing ones already set on this device.
+  const tunings = data.prefs && data.prefs.myTunings;
+  if (tunings && typeof tunings === 'object') {
+    library.prefs.myTunings = { ...tunings, ...(library.prefs.myTunings || {}) };
   }
   return { setlists, songs };
 }

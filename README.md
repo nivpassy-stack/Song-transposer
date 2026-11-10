@@ -5,6 +5,9 @@ Works in the browser and installs as an app (phone, tablet, computer); works off
 
 - **Studio view**: library of setlists and songs, transpose each song on its own,
   edit, reorder, join or split songs, back up and restore the library.
+- **Tunings**: songs written in any guitar or bass tuning can be played in any
+  other one, every note at the same pitch. Set your own tuning once (say, a bass
+  kept in drop D) and every song for that instrument is shown in it.
 - **Stage view**: large sheet, transpose and Accidentals controls, auto-scroll set
   by song length, next/previous song, keys for Bluetooth page-turner pedals.
 - **Files**: paste, .txt (UTF-8 or Windows-1255 Hebrew), ChordPro, PDF (including

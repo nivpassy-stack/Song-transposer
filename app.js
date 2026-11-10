@@ -4,7 +4,7 @@ import {
   loadLibrary, saveLibrary, addSetlist, updateSong, deleteSong, deleteSetlist,
   moveSong, mergeWithNext, splitAt, exportLibrary, restoreBackup,
   NAMED_TUNINGS, namedTuning, tuningFromNotes, splitNotes, uniformOffset,
-  standardTuning, isStandardTuning,
+  standardTuning, isStandardTuning, tabSystemSize,
 } from './src/index.js';
 import { renderSheet } from './src/render.js';
 
@@ -347,6 +347,8 @@ function renderTuning(record, song) {
   select.replaceChildren(group('Guitar', 'guitar'), group('Bass', 'bass'), ...extra);
   select.value = from.id;
   renderPlayIn(record, song, from);
+  $('inst-guitar').setAttribute('aria-pressed', String(from.instrument !== 'bass'));
+  $('inst-bass').setAttribute('aria-pressed', String(from.instrument === 'bass'));
 }
 
 /**
@@ -654,6 +656,25 @@ document.addEventListener('drop', (e) => {
 });
 
 // Tuning controls
+// Guitar | Bass: says which instrument a song is for, when the app guessed wrong.
+// The song goes to standard tuning for that instrument (a 5-string bass if its
+// tabs have that many strings), and plays in the player's own tuning, if one is set.
+function setInstrument(instrument) {
+  const record = currentSong();
+  if (!record || songTuning(record).instrument === instrument) return;
+  let tuning = STANDARD_TUNING;
+  if (instrument === 'bass') {
+    const lines = parsed(record).lines;
+    const start = lines.findIndex((l) => l.type === 'tab');
+    const tab = [];
+    for (let i = start; i >= 0 && i < lines.length && lines[i].type === 'tab'; i++) tab.push(lines[i].text);
+    const size = tabSystemSize(tab);
+    tuning = standardTuning({ instrument: 'bass', strings: size === 5 ? 5 : 4 });
+  }
+  changeSong({ tuningNotes: tuning.notes.join(' '), playIn: undefined });
+}
+$('inst-guitar').addEventListener('click', () => setInstrument('guitar'));
+$('inst-bass').addEventListener('click', () => setInstrument('bass'));
 $('tuning-from').addEventListener('change', (e) => {
   if (e.target.value === 'custom') {
     const input = $('tuning-custom');

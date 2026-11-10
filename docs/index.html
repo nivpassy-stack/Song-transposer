@@ -65,6 +65,7 @@
   .views { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .views button { border: 0; border-radius: 0; padding: 7px 14px; background: var(--surface); }
   .views button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 500; }
+  .views.instrument button { padding: 6px 12px; }
   .views button:disabled { color: var(--muted); cursor: not-allowed; }
 
   .studio { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
@@ -232,6 +233,10 @@
         <span class="by" id="artist" dir="auto"></span>
       </div>
       <div class="toolbar">
+        <div class="views instrument" role="group" aria-label="Instrument">
+          <button id="inst-guitar" aria-pressed="true">Guitar</button>
+          <button id="inst-bass" aria-pressed="false">Bass</button>
+        </div>
         <div class="group" role="group" aria-label="Transpose">
           <button id="down" aria-label="Down a semitone">−1</button>
           <span class="key" id="key" aria-live="polite"></span>

@@ -5,9 +5,10 @@ import {
 import {
   classifyLine, chordLineTokens, parseDirective, splitInlineChords, countHebrew, countLatin,
 } from './lines.js';
-import { transposeTabBlock } from './tabs.js';
+import { transposeTabBlock, tabShift } from './tabs.js';
 import {
-  tuningFromText, tuningFromTabLabels, retuneTabBlock, uniformOffset,
+  tuningFromText, tuningFromTabLabels, tabSystemSize, retuneTabBlock, uniformOffset,
+  standardTuning, BASS_WORD_RE,
 } from './tuning.js';
 
 /**
@@ -89,17 +90,61 @@ export function parseSongLines(rawLines, info = {}) {
 
 /**
  * The tuning a song is written for: from a line that names it, or else from
- * the string names of its first tab. Null means it gives no tuning (usually standard).
+ * the string names of its first tab. A song whose first tab has four or five
+ * strings (or bass string names) is a bass song, and with no tabs a song
+ * that says "bass" is too; a tuning name such as "Drop D" is then read as a
+ * bass tuning. Null means it gives no tuning (usually guitar standard).
  */
 function detectTuning(rawLines, lines) {
-  const fromText = tuningFromText(rawLines);
-  if (fromText) return fromText;
   const firstTab = [];
   for (const line of lines) {
     if (line.type === 'tab') firstTab.push(line.text);
     else if (firstTab.length) break;
   }
-  return tuningFromTabLabels(firstTab);
+  const fromTabs = tuningFromTabLabels(firstTab);
+  const size = tabSystemSize(firstTab);
+  const bass = firstTab.length
+    ? (fromTabs ? fromTabs.instrument === 'bass' : Boolean(size) && size < 6)
+    : rawLines.slice(0, 15).some((l) => BASS_WORD_RE.test(l));
+  const strings = fromTabs ? fromTabs.strings : size;
+  const fromText = tuningFromText(rawLines, bass ? { instrument: 'bass', strings } : {});
+  if (fromText) return fromText;
+  if (fromTabs) return fromTabs;
+  return bass && size && size < 6 ? standardTuning({ instrument: 'bass', strings: size }) : null;
+}
+
+/**
+ * The tuning to move one tab block from and to. A block with another number
+ * of strings than the song's tuning (a bass part in a guitar song) uses its
+ * own string names, and goes to standard tuning for its instrument.
+ */
+function blockRetune(tabLines, retuning) {
+  const size = tabSystemSize(tabLines);
+  if (!size || size === retuning.from.pitches.length) return retuning;
+  const own = tuningFromTabLabels(tabLines);
+  return own ? { from: own, to: standardTuning(own) } : retuning;
+}
+
+/** The bass tuning a tab block is played in, or null if it is not a bass tab. */
+function bassBlockTuning(tabLines, songTuning) {
+  const size = tabSystemSize(tabLines);
+  const own = tuningFromTabLabels(tabLines);
+  if (own) return own.instrument === 'bass' ? own : null;
+  if (songTuning && songTuning.instrument === 'bass' && songTuning.strings === size) return songTuning;
+  return size && size < 6 ? standardTuning({ instrument: 'bass', strings: size }) : null;
+}
+
+/**
+ * Transpose a bass tab down past the open strings. Rather than moving the
+ * whole bass line up an octave, each note that would need a fret below the
+ * open string moves to a lower string (the line stays in the same octave);
+ * only notes below the lowest string go up an octave. This is the same as
+ * moving the tab from a tuning `semitones` higher to the one it is in.
+ */
+function transposeBassBlock(tabLines, semitones, tuning) {
+  const shifted = { ...tuning, pitches: tuning.pitches.map((p) => p + semitones) };
+  const moved = retuneTabBlock(tabLines, shifted, tuning);
+  return moved.skipped ? null : moved;
 }
 
 export function parseSong(text, info) {
@@ -160,6 +205,8 @@ export function rebuildChordLine(tokens, mapChord) {
  *   (they name the notes that sound), unless `shapes` says they name the
  *   shapes held in the old tuning, as is usual for songs tuned down a half
  *   or whole step; then they move by the difference between the tunings.
+ * Bass tabs moved down past the open strings put notes on a lower string
+ * where they can (counted in `bassMoves`) instead of going up an octave.
  * Returns a new song; the original is not changed.
  */
 export function transposeSong(song, semitones, spelling = 'auto', retune = null) {
@@ -175,6 +222,7 @@ export function transposeSong(song, semitones, spelling = 'auto', retune = null)
   const lines = [];
   const notes = [];
   const tuningReport = { moved: 0, octave: 0, merged: 0, skipped: 0 };
+  let bassMoves = 0;
   for (let i = 0; i < song.lines.length; i++) {
     const line = song.lines[i];
     if (line.type === 'chords') {
@@ -184,8 +232,9 @@ export function transposeSong(song, semitones, spelling = 'auto', retune = null)
       let j = i;
       while (j < song.lines.length && song.lines[j].type === 'tab') j++;
       let tabLines = song.lines.slice(i, j).map((l) => l.text);
-      if (retuning) {
-        const moved = retuneTabBlock(tabLines, retuning.from, retuning.to);
+      const blockTuning = retuning && blockRetune(tabLines, retuning);
+      if (blockTuning && blockTuning.from.id !== blockTuning.to.id) {
+        const moved = retuneTabBlock(tabLines, blockTuning.from, blockTuning.to);
         tabLines = moved.lines;
         tuningReport.moved += moved.moved;
         tuningReport.octave += moved.octave;
@@ -194,16 +243,25 @@ export function transposeSong(song, semitones, spelling = 'auto', retune = null)
       }
       // Tabs shift by the smallest move, up or down, unless that needs negative frets.
       const tabSemitones = tabN > 6 ? tabN - 12 : tabN;
-      const block = transposeTabBlock(tabLines, tabSemitones);
-      if (block.octave) notes.push({ line: i, octave: block.octave });
-      for (const text of block.lines) lines.push({ type: 'tab', text });
+      const bassTuning = tabSemitones && bassBlockTuning(tabLines, blockTuning ? blockTuning.to : song.tuning);
+      const bass = bassTuning && tabShift(tabLines, tabSemitones).octave === 1
+        ? transposeBassBlock(tabLines, tabSemitones, bassTuning) : null;
+      if (bass) {
+        if (bass.octave) notes.push({ line: i, octave: 1, notes: bass.octave });
+        if (bass.moved) bassMoves += bass.moved;
+        for (const text of bass.lines) lines.push({ type: 'tab', text });
+      } else {
+        const block = transposeTabBlock(tabLines, tabSemitones);
+        if (block.octave) notes.push({ line: i, octave: block.octave });
+        for (const text of block.lines) lines.push({ type: 'tab', text });
+      }
       i = j - 1;
     } else {
       lines.push(line);
     }
   }
   return {
-    ...song, lines, key, semitones: n, useFlats, notes,
+    ...song, lines, key, semitones: n, useFlats, notes, bassMoves,
     retuned: retuning ? { from: retuning.from, to: retuning.to, shapeShift, ...tuningReport } : null,
   };
 }

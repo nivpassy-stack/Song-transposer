@@ -1,6 +1,6 @@
 # Chord Transposer
 
-Transpose guitar chords and tabs, keep setlists, and play with auto-scroll.
+Transpose guitar chords and tabs (and 4, 5 and 6-string bass tabs), keep setlists, and play with auto-scroll.
 Works in the browser and installs as an app (phone, tablet, computer); works offline.
 
 - **Studio view**: library of setlists and songs, transpose each song on its own,
@@ -17,6 +17,7 @@ Works in the browser and installs as an app (phone, tablet, computer); works off
 - `src/chords.js` parse, transpose and spell chords; detect the key
 - `src/lines.js` classify lines: chords, lyrics, tabs, sections, credits, ChordPro
 - `src/tabs.js` shift tab frets, keeping strings aligned
+- `src/tuning.js` guitar and bass tunings: recognise them, move tabs between them
 - `src/song.js` song model, transposing, chord/lyric pairing for display
 - `src/split.js` split a multi-song file into a setlist
 - `src/extract.js` read text, PDF, Word and HTML files

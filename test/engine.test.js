@@ -232,3 +232,86 @@ test('converts a whole song, with chord shapes for songs tuned down', async () =
 test('keeps tab lines that end with a comment', () => {
   assert.equal(classifyLine('G|--------------3-3-3/5-5-5---| repeat twice').type, 'tab');
 });
+
+test('recognises bass tabs and bass tunings', async () => {
+  const { tuningFromText, splitNotes, tuningFromTabLabels, tabSystemSize, instrumentFor } = await import('../src/tuning.js');
+  assert.deepEqual(splitNotes('E A D G'), ['E', 'A', 'D', 'G']);
+  assert.deepEqual(splitNotes('Eb Ab Db Gb'), ['Eb', 'Ab', 'Db', 'Gb']);
+  assert.deepEqual(splitNotes('BEADG'), ['B', 'E', 'A', 'D', 'G']);
+  // Six notes are still read as a guitar first.
+  assert.deepEqual(splitNotes('EADGbe'), ['E', 'A', 'D', 'G', 'b', 'e']);
+  assert.equal(instrumentFor(['E', 'A', 'D', 'G', 'B', 'E']), 'guitar');
+  assert.equal(instrumentFor(['B', 'E', 'A', 'D', 'G', 'C']), 'bass');
+  // A guitar tab that leaves out the low strings is not a bass tuning.
+  assert.equal(instrumentFor(['D', 'G', 'B', 'E']), null);
+  assert.equal(tuningFromTabLabels(['e|--------|', 'B|--------|', 'G|--------|', 'D|--------|']), null);
+
+  const bass4 = tuningFromTabLabels(['G|-----|', 'D|-----|', 'A|-----|', 'E|-----|']);
+  assert.equal(bass4.id, 'bass-standard');
+  assert.deepEqual(bass4.pitches, [28, 33, 38, 43]);
+  assert.equal(tuningFromTabLabels(['G|-----|', 'D|-----|', 'A|-----|', 'D|-----|']).id, 'bass-drop-d');
+  assert.equal(tuningFromTabLabels(['G|-----|', 'D|-----|', 'A|-----|', 'E|-----|', 'B|-----|']).id, 'bass-5');
+  assert.equal(tuningFromTabLabels(['C|-----|', 'G|-----|', 'D|-----|', 'A|-----|', 'E|-----|', 'B|-----|']).id, 'bass-6');
+  // Two 4-string systems in one block are not read as a 6-string tab.
+  const two = ['G|--|', 'D|--|', 'A|--|', 'E|--|', 'G|--|', 'D|--|', 'A|--|', 'E|--|'];
+  assert.equal(tabSystemSize(two), 4);
+  assert.equal(tuningFromTabLabels(two).id, 'bass-standard');
+  assert.equal(tabSystemSize(['e|--|', 'B|--|', 'G|--|', 'D|--|', 'A|--|', 'E|--|']), 6);
+
+  assert.equal(tuningFromText(['Tuning: E A D G']).id, 'bass-standard');
+  assert.equal(tuningFromText(['Tuning: B E A D G']).id, 'bass-5');
+  assert.equal(tuningFromText(['Tuning: Drop D'], { instrument: 'bass', strings: 4 }).id, 'bass-drop-d');
+  assert.equal(tuningFromText(['Tuning: standard'], { instrument: 'bass', strings: 5 }).id, 'bass-5');
+  // Guitar songs keep reading names as guitar tunings.
+  assert.equal(tuningFromText(['Tuning: Drop D']).id, 'drop-d');
+});
+
+test('parses bass songs and transposes bass tabs down onto lower strings', async () => {
+  const bassLine = 'Riff (bass)\n\nG|-----------------|\nD|-----------------|\nA|-7--7-10-7-5-3-2-|\nE|-----------------|\n\nAm  G\nla la';
+  const song = parseSong(bassLine);
+  assert.equal(song.tuning.id, 'bass-standard');
+  // Down 3: the last note (A string fret 2) moves to the E string, not the whole riff up an octave.
+  const down = transposeSong(song, -3);
+  assert.deepEqual(down.lines.filter((l) => l.type === 'tab').map((l) => l.text), [
+    'G|-----------------|',
+    'D|-----------------|',
+    'A|-4--4-7--4-2-0---|',
+    'E|---------------4-|',
+  ]);
+  assert.equal(down.bassMoves, 1);
+  assert.equal(down.notes.length, 0);
+  // Up is a plain fret shift.
+  const up = transposeSong(song, 2);
+  assert.equal(up.lines.filter((l) => l.type === 'tab')[2].text, 'A|-9--9-12-9-7-5-4-|');
+  // Unlabelled 4-line tabs are bass tabs too.
+  assert.equal(parseSong('|-----------|\n|-----------|\n|--2--------|\n|--------3--|').tuning.id, 'bass-standard');
+  // Notes below the low string of a bass still go up an octave.
+  const low = transposeSong(parseSong('G|-------|\nD|-------|\nA|-------|\nE|--0--3-|'), -1);
+  assert.equal(low.lines[3].text, 'E|--11-2-|');
+  assert.equal(low.notes.length, 1);
+});
+
+test('moves bass tabs to bass standard tuning, and leaves bass parts of guitar songs to their own tuning', async () => {
+  const { namedTuning, standardTuning, isStandardTuning, retuneTabBlock, uniformOffset } = await import('../src/tuning.js');
+  const dropD = namedTuning('bass-drop-d');
+  assert.equal(standardTuning(dropD).id, 'bass-standard');
+  assert.equal(standardTuning(namedTuning('bass-5')).id, 'bass-5');
+  assert.ok(isStandardTuning(namedTuning('bass-6')));
+  assert.equal(uniformOffset(namedTuning('bass-half-down')), -1);
+  // Drop D fret 5 (G1) is fret 3 on the E string; the open low D is below a 4-string bass, so it goes up an octave.
+  const riff = retuneTabBlock(['G|-------|', 'D|-------|', 'A|-------|', 'D|--0-5--|'], dropD, standardTuning(dropD));
+  assert.deepEqual(riff.lines, ['G|--------|', 'D|--------|', 'A|--------|', 'E|--10-3--|']);
+  assert.equal(riff.octave, 1);
+  // A guitar tuning is not applied to a bass tab, nor a bass tuning to a guitar tab.
+  assert.ok(retuneTabBlock(['G|---|', 'D|---|', 'A|---|', 'D|-5-|'], namedTuning('drop-d'), namedTuning('standard')).skipped);
+
+  const song = parseSong('Tuning: Drop D\n\ne|-----|\nB|-----|\nG|-----|\nD|-----|\nA|-----|\nD|--5--|\n\nBass:\nG|-----|\nD|-----|\nA|-----|\nD|--5--|');
+  assert.equal(song.tuning.id, 'drop-d');
+  const moved = transposeSong(song, 0, 'auto', { from: song.tuning, to: standardTuning(song.tuning) });
+  const tabs = moved.lines.filter((l) => l.type === 'tab').map((l) => l.text);
+  assert.equal(tabs[5], 'E|--3--|');
+  assert.equal(tabs[9], 'E|--3--|');
+  assert.equal(moved.retuned.skipped, 0);
+  // A bass song that names its tuning.
+  assert.equal(parseSong('Tuning: Drop D\nG|-------|\nD|-------|\nA|-------|\nD|--0----|').tuning.id, 'bass-drop-d');
+});

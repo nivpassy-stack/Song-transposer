@@ -4,6 +4,7 @@ import {
   loadLibrary, saveLibrary, addSetlist, updateSong, deleteSong, deleteSetlist,
   moveSong, mergeWithNext, splitAt, exportLibrary, restoreBackup,
   NAMED_TUNINGS, namedTuning, tuningFromNotes, splitNotes, uniformOffset,
+  standardTuning, isStandardTuning,
 } from './src/index.js';
 import { renderSheet } from './src/render.js';
 
@@ -75,7 +76,8 @@ function parsed(record) {
   return parsedCache.get(cacheKey);
 }
 
-// Tuning: the song's own (as found in it, or as set by hand), and whether to play it in standard.
+// Tuning: the song's own (as found in it, or as set by hand), and whether to play it in standard
+// (guitar standard, or bass standard with the same number of strings).
 const STANDARD_TUNING = namedTuning('standard');
 
 function songTuning(record) {
@@ -85,17 +87,17 @@ function songTuning(record) {
 
 function retuneFor(record) {
   const from = songTuning(record);
-  if (record.playIn !== 'standard' || from.id === 'standard') return null;
+  if (record.playIn !== 'standard' || isStandardTuning(from)) return null;
   // Songs tuned down evenly usually name chord shapes; others name the notes that sound.
   const shapes = record.chordShapes ?? uniformOffset(from) !== 0;
-  return { from, to: STANDARD_TUNING, shapes };
+  return { from, to: standardTuning(from), shapes };
 }
 
 function shown(record) {
   return transposeSong(parsed(record), record.semitones, record.spelling, retuneFor(record));
 }
 
-const tuningLabel = (t) => (t.id === 'standard' || NAMED_TUNINGS.some((n) => n.id === t.id)
+const tuningLabel = (t) => (NAMED_TUNINGS.some((n) => n.id === t.id)
   ? `${t.name} (${t.notes.join(' ')})`
   : t.notes.join(' '));
 
@@ -262,6 +264,7 @@ function renderSong() {
   renderTuning(record, song);
   const messages = [];
   if (song.notes.length) messages.push('Some tab parts were moved up an octave, because moving them down would need frets below the open string.');
+  if (song.bassMoves) messages.push(`${song.bassMoves} bass note${song.bassMoves === 1 ? '' : 's'} moved to a lower string, so the bass line could go down.`);
   if (song.retuned) messages.push(retuneSummary(song.retuned));
   const note = $('note');
   note.hidden = !messages.length;
@@ -284,11 +287,13 @@ function keyLabel(semitones, from, to) {
 }
 
 function retuneSummary(r) {
-  const parts = [`Tabs moved from ${r.from.notes.join(' ')} to standard tuning, every note at the same pitch.`];
+  const bass = r.to.instrument === 'bass';
+  const target = bass ? `${r.to.name.toLowerCase()} tuning (${r.to.notes.join(' ')})` : 'standard tuning';
+  const parts = [`Tabs moved from ${r.from.notes.join(' ')} to ${target}, every note at the same pitch.`];
   if (r.moved) parts.push(`${r.moved} note${r.moved === 1 ? '' : 's'} moved to a thicker string.`);
   if (r.merged) parts.push(`${r.merged} doubled note${r.merged === 1 ? '' : 's'} (played on two strings in the old tuning) now played once.`);
-  if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than a standard guitar goes, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
-  if (r.skipped) parts.push('Tabs that are not six strings were left as written.');
+  if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than a standard ${bass ? 'bass' : 'guitar'} goes, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
+  if (r.skipped) parts.push(`Tabs that are not ${r.from.pitches.length} strings were left as written.`);
   if (r.shapeShift) parts.push(`Chords moved ${Math.abs(r.shapeShift)} semitone${Math.abs(r.shapeShift) === 1 ? '' : 's'} ${r.shapeShift < 0 ? 'down' : 'up'}, from shapes to the notes that sound.`);
   return parts.join(' ');
 }
@@ -296,22 +301,32 @@ function retuneSummary(r) {
 function renderTuning(record, song) {
   const from = songTuning(record);
   const select = $('tuning-from');
-  const options = NAMED_TUNINGS.map((t) => [t.id, tuningLabel(namedTuning(t.id))]);
-  if (!NAMED_TUNINGS.some((t) => t.id === from.id)) options.push([from.id, from.notes.join(' ')]);
-  options.push(['custom', 'Other tuning…']);
-  select.replaceChildren(...options.map(([value, label]) => {
+  const option = ([value, label]) => {
     const o = el('option', '', label);
     o.value = value;
     return o;
-  }));
+  };
+  const group = (label, instrument) => {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    g.append(...NAMED_TUNINGS.filter((t) => t.instrument === instrument).map((t) => option([t.id, tuningLabel(namedTuning(t.id))])));
+    return g;
+  };
+  const extra = [];
+  if (!NAMED_TUNINGS.some((t) => t.id === from.id)) extra.push(option([from.id, from.notes.join(' ')]));
+  extra.push(option(['custom', 'Other tuning…']));
+  select.replaceChildren(group('Guitar', 'guitar'), group('Bass', 'bass'), ...extra);
   select.value = from.id;
+  const standard = isStandardTuning(from);
   $('tuning-play').value = record.playIn === 'standard' ? 'standard' : 'written';
-  $('tuning-play').disabled = from.id === 'standard';
+  $('tuning-play').disabled = standard;
   const uneven = uniformOffset(from) === 0;
-  $('shapes-wrap').hidden = uneven || from.id === 'standard' || record.playIn !== 'standard';
+  $('shapes-wrap').hidden = uneven || standard || record.playIn !== 'standard';
   $('tuning-shapes').checked = Boolean(song.retuned && song.retuned.shapes);
+  $('tuning-play').options[1].textContent = from.instrument === 'bass' ? `Bass standard (${standardTuning(from).notes.join(' ')})` : 'Standard tuning';
+  $('stage-tuning').options[1].textContent = $('tuning-play').options[1].textContent;
   // Stage shows the choice only for songs in another tuning.
-  $('stage-tuning').hidden = from.id === 'standard';
+  $('stage-tuning').hidden = standard;
   $('stage-tuning').value = $('tuning-play').value;
   $('stage-tuning').options[0].textContent = `${from.name === from.notes.join(' ') ? from.notes.join(' ') : from.name} tuning`;
   $('tuning-play').options[0].textContent = `Written tuning (${from.notes.join(' ')})`;
@@ -599,7 +614,7 @@ function saveCustomTuning() {
   input.hidden = true;
   if (tuning) changeSong({ tuningNotes: tuning.notes.join(' ') });
   else {
-    toast('Write six notes from the low string to the high one, like C G C G G E.');
+    toast('Write the notes from the low string to the high one, like C G C G G E for a guitar or D A D G for a bass.');
     render();
   }
 }

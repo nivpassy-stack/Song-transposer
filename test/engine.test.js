@@ -6,7 +6,7 @@ import mammoth from 'mammoth';
 import {
   parseChord, transposeChord, detectKey, classifyLine, shiftTabLine, transposeTabBlock,
   parseSong, transposeSong, songKeyName, songToText, songBlocks, splitSongs,
-  pdfToText, docxToText, decodeText, normalizeText, pdfItemsToText, HEADING_MARK, PAGE_BREAK,
+  pdfToText, docxToText, decodeText, normalizeText, pdfItemsToText, pdfPageCells, HEADING_MARK, PAGE_BREAK,
 } from '../src/index.js';
 
 const sample = (name) => fs.readFileSync(new URL(`./samples/${name}`, import.meta.url));
@@ -210,6 +210,58 @@ test('a contents entry is matched to the heading, not to a lyric line before it'
   assert.ok(songs[0].source.includes('la la la'));
 });
 
+// A page with two songs side by side, each a bold title over its own text
+// boxes: an English song on the left, a Hebrew song in two columns on the
+// right (read from the right-hand column first).
+const at = (str, x, y, fontName = 'body', size = 10) => ({ str, transform: [size, 0, 0, size, x, y], width: str.length * 6, height: size, fontName });
+const sideBySide = () => pdfItemsToText([
+  at('Left Song', 40, 760, 'bold', 11),
+  at('שיר ימני', 520, 760, 'bold', 11),
+  at('G       C', 40, 720), at('Hello there my friend', 40, 708),
+  at('Am      F', 40, 690), at('Goodbye my friend', 40, 678),
+  at('Am', 560, 720), at('שורה ראשונה בטור הימני', 440, 708),
+  at('C', 380, 720), at('שורה בטור האמצעי', 300, 708),
+], [[30, 600, 280, 740], [420, 600, 580, 740], [290, 600, 410, 740]], { bold: { bold: true }, body: { bold: false } });
+
+test('reads songs set side by side on a page one after the other', () => {
+  const text = sideBySide();
+  const order = ['Left Song', 'Hello there', 'Goodbye', 'שיר ימני', 'בטור הימני', 'בטור האמצעי'].map((t) => text.indexOf(t));
+  assert.ok(order.every((n) => n >= 0), text);
+  assert.deepEqual([...order].sort((a, b) => a - b), order, text);
+  assert.ok(!/Left Song\s+שיר/.test(text), 'the two titles are not read as one line');
+});
+
+test('a Hebrew song set next to an English one is read right to left', () => {
+  const songs = splitSongs(`${sideBySide()}`);
+  assert.deepEqual(songs.map((s) => s.title), ['Left Song', 'שיר ימני']);
+  assert.equal(songs[1].dir, 'rtl');
+  assert.equal(songs[0].dir, 'ltr');
+  assert.ok(!songs[0].source.includes('שורה'));
+});
+
+test('finds text boxes drawn inside a transform', async () => {
+  const OPS = { save: 1, restore: 2, transform: 3, constructPath: 4 };
+  const page = {
+    getOperatorList: async () => ({
+      fnArray: [OPS.save, OPS.transform, OPS.constructPath, OPS.restore, OPS.constructPath],
+      argsArray: [null, [1, 0, 0, 1, 683, 46], [[], [], [0, 0, 635, 1094]], null, [[], [], [36, 46, 671, 1141]]],
+    }),
+  };
+  assert.deepEqual(await pdfPageCells(page, { OPS }), [[683, 46, 1318, 1140], [36, 46, 671, 1141]]);
+});
+
+test('contents entries are found on their pages, in any order', () => {
+  const text = [
+    'Contents', 'Second Song ........ 2', 'First Song ........ 2', 'Third Song ........ 3', PAGE_BREAK,
+    `${HEADING_MARK}First Song`, '', 'G   C', 'la la la', '',
+    `${HEADING_MARK}Second Song`, '', 'Am  F', 'Third song is on the next page', PAGE_BREAK,
+    `${HEADING_MARK}Third Song`, '', 'D   A', 'na na na',
+  ].join('\n');
+  const songs = splitSongs(text);
+  assert.deepEqual(songs.map((s) => s.title), ['First Song', 'Second Song', 'Third Song']);
+  assert.ok(songs[1].source.includes('Third song is on the next page'));
+});
+
 // Avital's own song file is kept out of the public repository; the test runs where it exists.
 const hasRealPdf = fs.existsSync(new URL('./samples/songs-for-playing.pdf', import.meta.url));
 
@@ -407,4 +459,32 @@ test('restores the player\'s own tunings from a backup', async () => {
   const b = { songs: {}, setlists: [], prefs: { myTunings: { 'guitar-6': 'D A D G B E' } } };
   restoreBackup(b, exportLibrary(a));
   assert.deepEqual(b.prefs.myTunings, { 'bass-4': 'D A D G', 'guitar-6': 'D A D G B E' });
+});
+
+// Avital's newer song file (text boxes, songs side by side): also kept out of the repository.
+const hasNewPdf = fs.existsSync(new URL('./samples/songs-for-playing-2026-08.pdf', import.meta.url));
+
+test("splits Avital's newer PDF: songs side by side, contents out of page order", { skip: !hasNewPdf }, async () => {
+  const text = await pdfToText(new Uint8Array(sample('songs-for-playing-2026-08.pdf')), pdfjs);
+  const songs = splitSongs(text);
+  assert.deepEqual(songs.map((s) => s.title), [
+    'Plush', 'Tomorrow', 'My Friends Over You', 'All I Want', 'Pink Stars and Magazines', 'עוד ארון אחד',
+    'Feel the Pain', 'The Middle', 'All the small things', 'Basket case', 'Hash Pipe', 'Fat Lip',
+    'Pain for pleasure', 'Everything for free', 'Open Surgery', 'Weak', 'Last Resort', 'Again',
+    "Nobody's Wife", 'You oughta know', "That's what you get", 'State of love and trust', 'Soul to squeeze',
+  ]);
+  const byTitle = Object.fromEntries(songs.map((s) => [s.title, s]));
+  // Plush's three columns, in order, all in Plush.
+  const plush = byTitle.Plush.source;
+  assert.ok(plush.indexOf('[Instrumental]') < plush.indexOf('eyes of disarray') && plush.indexOf('eyes of disarray') < plush.indexOf('[Bridge]'));
+  // The Hebrew song shares its page with Feel the Pain: right column first, and nothing of the other song.
+  const hebrew = byTitle['עוד ארון אחד'];
+  assert.equal(hebrew.dir, 'rtl');
+  assert.ok(hebrew.source.indexOf('כמה זמני') < hebrew.source.indexOf('סולו'));
+  assert.ok(!hebrew.source.includes('Riff'));
+  assert.ok(byTitle['Feel the Pain'].source.startsWith('[Riff 1]'));
+  assert.ok(!byTitle['Fat Lip'].source.includes('x19'));
+  assert.ok(byTitle['Pain for pleasure'].source.includes('x19'));
+  assert.ok(byTitle.Weak.source.includes('Lost in time'));
+  assert.ok(!byTitle['Open Surgery'].source.includes('Lost in time'));
 });

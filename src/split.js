@@ -16,7 +16,7 @@ const TITLE_ARTIST_RE = /^(.+?)\s+[-–—|]\s+(.+)$/;
 
 /** Turn a title line into {title, artist}: "Title - Artist", "3. Title". */
 export function parseTitleLine(line) {
-  let text = line.trim();
+  let text = line.trim().replace(/\s{2,}/g, ' ');
   const numbered = NUMBERED_RE.exec(text);
   if (numbered) text = numbered[2].trim();
   const m = TITLE_ARTIST_RE.exec(text);
@@ -133,25 +133,27 @@ const CONTENTS_HEADER_RE = /^\s*(contents|table of contents|index|songs|תוכן
 
 /**
  * Find a table of contents ("Song title ........ 12"). Returns the song
- * titles and the range of lines it takes up, or null.
+ * titles, their page numbers and the range of lines it takes up, or null.
  */
 export function findContents(lines) {
   let from = -1;
   let to = -1;
   const titles = [];
+  const pages = [];
   for (let i = 0; i < lines.length; i++) {
     const m = CONTENTS_LINE_RE.exec(lines[i]);
     if (m) {
       if (from < 0) from = i;
       to = i + 1;
       titles.push(m[1].replace(/\s{2,}/g, ' ').trim());
+      pages.push(Number(m[2]));
     } else if (from >= 0 && lines[i].trim() && lines[i] !== PAGE_BREAK) {
       break;
     }
   }
   if (titles.length < 2) return null;
   while (from > 0 && (!lines[from - 1].trim() || CONTENTS_HEADER_RE.test(lines[from - 1]))) from--;
-  return { from, to, titles };
+  return { from, to, titles, pages };
 }
 
 /** Letters and digits only, lower case, so "Blink   - 182" matches "Blink-182". */
@@ -160,35 +162,58 @@ function titleKey(text) {
 }
 
 /**
- * Song starts from a table of contents: each title is looked for, in order,
- * on a line of its own. When the file marks headings, a heading with the
- * title is taken over an earlier lyric line that happens to match it.
+ * Song starts from a table of contents, as [{line, title}] in file order.
+ *
+ * Each title is looked for on a line of its own: a heading (when the file
+ * marks them) before any other line, and on the page the contents gives
+ * (when the pages line up with the file's page breaks) first. Titles are not assumed to be in page order: a contents page may
+ * list two songs that share a page in either order. Without page numbers,
+ * a title is looked for after the one before it, so a song's title sung in
+ * an earlier song's lyrics is passed over.
  * Returns null if fewer than half the titles are found.
  */
-export function startsFromContents(lines, titles, headings = []) {
+export function startsFromContents(lines, titles, headings = [], pages = []) {
   const useHeadings = headings.filter(Boolean).length >= 2;
+  const pageOf = [];
+  let page = 1;
+  for (const line of lines) {
+    if (line === PAGE_BREAK) page++;
+    pageOf.push(page);
+  }
+  const usePages = pages.length === titles.length && page > 1 && Math.max(...pages) <= page;
   const matches = (j, key) => {
     const lineKey = titleKey(lines[j]);
     return lineKey && lineKey.length >= key.length * 0.7 && (key === lineKey || key.startsWith(lineKey) || lineKey.startsWith(key));
   };
-  const starts = [];
-  let i = 0;
-  for (const title of titles) {
+  const used = new Set();
+  const find = (key, from, ok) => {
+    for (let j = from; j < lines.length; j++) if (!used.has(j) && ok(j) && matches(j, key)) return j;
+    return -1;
+  };
+  const found = [];
+  let after = 0;
+  titles.forEach((title, k) => {
     const key = titleKey(title);
-    if (!key) continue;
-    let found = -1;
-    if (useHeadings) {
-      for (let j = i; j < lines.length && found < 0; j++) if (headings[j] && matches(j, key)) found = j;
+    if (!key) return;
+    const onPage = (j) => pageOf[j] === pages[k];
+    const tries = [];
+    if (usePages && useHeadings) tries.push([0, (j) => onPage(j) && headings[j]]);
+    if (useHeadings) tries.push([usePages ? 0 : after, (j) => headings[j]]);
+    if (usePages) tries.push([0, onPage]);
+    tries.push([after, () => true]);
+    for (const [from, ok] of tries) {
+      const j = find(key, from, ok);
+      if (j >= 0) {
+        used.add(j);
+        found.push({ line: j, title });
+        after = j + 1;
+        return;
+      }
     }
-    for (let j = i; j < lines.length && found < 0; j++) if (matches(j, key)) found = j;
-    if (found >= 0) {
-      starts.push(found);
-      i = found + 1;
-    }
-  }
-  if (starts.length < titles.length / 2) return null;
+  });
+  if (found.length < titles.length / 2) return null;
   // Anything before the first title (a cover page) is not a song.
-  return starts;
+  return found.sort((a, b) => a.line - b.line);
 }
 
 /**
@@ -206,7 +231,8 @@ export function splitSongs(text) {
     lines.splice(toc.from, toc.to - toc.from);
     headings.splice(toc.from, toc.to - toc.from);
   }
-  const starts = (toc && startsFromContents(lines, toc.titles, headings)) || findSongStarts(lines, headings);
+  const fromContents = toc && startsFromContents(lines, toc.titles, headings, toc.pages);
+  const starts = fromContents ? fromContents.map((s) => s.line) : findSongStarts(lines, headings);
   const songs = [];
   starts.forEach((start, k) => {
     const end = k + 1 < starts.length ? starts[k + 1] : lines.length;
@@ -224,7 +250,11 @@ export function splitSongs(text) {
       && chunk[1].trim().length <= 40;
     const startsWithLyrics = second.type === 'lyric' && !artistLine;
     const plainTitle = first.type === 'lyric' && !parseDirective(chunk[0]) && !/\[[^\]]+\]/.test(chunk[0]);
-    if (plainTitle && !startsWithLyrics && chunk[0].trim().length <= 60) {
+    if (fromContents) {
+      // The line found for a contents entry is the title; the contents spells it best.
+      info = parseTitleLine(fromContents[k].title);
+      chunk = chunk.slice(1);
+    } else if (plainTitle && !startsWithLyrics && chunk[0].trim().length <= 60) {
       info = parseTitleLine(chunk[0]);
       chunk = chunk.slice(1);
       if (artistLine && !info.artist) {

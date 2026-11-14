@@ -1,5 +1,7 @@
 // Guitar and bass tunings: recognising them, and moving tabs from one tuning
 // to another so every note keeps its pitch.
+import { tabNotes, transposeTabBlock } from './tabs.js';
+
 const LETTER_VALUES = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 // Standard tuning as MIDI note numbers, low string to high: E2 A2 D3 G3 B3 E4.
 export const STANDARD = [40, 45, 50, 55, 59, 64];
@@ -216,25 +218,24 @@ export function tuningFromTabLabels(tabLines) {
 
 // ---- Moving tab notes between tunings ----
 
-const NOTE_RE = /\d+/g;
 const CONNECTOR_RE = /^[hpbrs/\\~^]$/i;
 
-/** Split a tab body into note groups: numbers joined by h, p, / and similar. */
-function noteGroups(body) {
+/**
+ * Group a line's notes (from tabNotes) into note groups: numbers joined by
+ * h, p, / and similar.
+ */
+function noteGroups(body, found) {
   const groups = [];
-  let m;
-  NOTE_RE.lastIndex = 0;
-  while ((m = NOTE_RE.exec(body))) {
-    if (/[x×]/i.test(body[m.index - 1] || '')) continue; // "x2" repeat marks
-    const note = { col: m.index, text: m[0], fret: Number(m[0]) };
+  for (const n of found) {
+    const note = { col: n.start, text: n.text, fret: n.fret };
     const prev = groups.at(-1);
-    const between = prev ? body.slice(prev.end, m.index) : '';
+    const between = prev ? body.slice(prev.end, n.start) : '';
     if (prev && between.length === 1 && CONNECTOR_RE.test(between)) {
       prev.notes.push(note);
       prev.connectors.push(between);
-      prev.end = m.index + m[0].length;
+      prev.end = n.end;
     } else {
-      groups.push({ start: m.index, end: m.index + m[0].length, notes: [note], connectors: [] });
+      groups.push({ start: n.start, end: n.end, notes: [note], connectors: [], packed: n.packed });
     }
   }
   return groups;
@@ -267,7 +268,9 @@ export function retuneTabSystem(lines, from, to) {
   // The tab as written, to tell free spots from notes.
   const original = rows.map((row) => [...row.body]);
 
-  const all = rows.flatMap((row, r) => noteGroups(row.body.join('').slice(0, row.tabEnd)).map((g) => ({
+  const bodies = rows.map((row) => row.body.join('').slice(0, row.tabEnd));
+  const found = tabNotes(bodies);
+  const all = rows.flatMap((row, r) => noteGroups(bodies[r], found[r]).map((g) => ({
     r, g, pitches: g.notes.map((n) => from.pitches[stringOf(r)] + n.fret),
   })));
   const samePitches = (a, b) => a.length === b.length && a.every((p, k) => p === b[k]);
@@ -319,7 +322,7 @@ export function retuneTabSystem(lines, from, to) {
       }
     }
     const text = groupText(frets, g.connectors);
-    placements.push({ row, start: g.start, oldLen: g.end - g.start, text, from: r });
+    placements.push({ row, start: g.start, oldLen: g.end - g.start, text, from: r, packed: g.packed });
     taken[row].push([g.start, g.start + Math.max(text.length, g.end - g.start)]);
   }
 
@@ -331,16 +334,18 @@ export function retuneTabSystem(lines, from, to) {
   const inserts = new Map();
   for (const p of placements) {
     const startsAfter = (c) => placements.some((o) => o !== p && o.row === p.row && o.start === c);
+    // Notes packed together ("666") keep a dash between them once wider.
+    const need = p.text.length + (p.packed && p.text.length > p.oldLen && /\d/.test(original[p.from][p.start + p.oldLen] || '') ? 1 : 0);
     let room = p.oldLen;
-    while (room < p.text.length) {
+    while (room < need) {
       const c = p.start + room;
       const free = isDash(original[p.row][c]) || all.some((o) => o.r === p.row && o.g.start <= c && c < o.g.end && o.dropped);
       if (!free || startsAfter(c) || startsAfter(c + 1) || c + 1 >= rows[p.row].tabEnd) break;
       room++;
     }
-    if (room < p.text.length) {
+    if (room < need) {
       const at = p.start + p.oldLen;
-      inserts.set(at, Math.max(inserts.get(at) || 0, p.text.length - room));
+      inserts.set(at, Math.max(inserts.get(at) || 0, need - room));
     }
   }
   const points = [...inserts.entries()].sort((a, b) => b[0] - a[0]);
@@ -377,6 +382,14 @@ export function retuneTabBlock(lines, from, to) {
   const n = from.pitches.length;
   const size = tabSystemSize(lines);
   if (!lines.length || to.pitches.length !== n || lines.length % n !== 0 || (size && size !== n)) {
+    // A part tab with no string names ("|--4-4-|" on three strings) can still
+    // move when every string is retuned by the same amount, as in half step down.
+    const diffs = from.pitches.map((p, i) => p - to.pitches[i]);
+    if (lines.length && to.pitches.length === n && diffs.every((d) => d === diffs[0]) && !lines.some(tabLabel)) {
+      const shifted = transposeTabBlock(lines, diffs[0]);
+      const octave = shifted.octave ? tabNotes(lines).flat().length : 0;
+      return { lines: shifted.lines, moved: 0, octave, merged: 0, skipped: false };
+    }
     return { lines, moved: 0, octave: 0, merged: 0, skipped: true };
   }
   const out = [];

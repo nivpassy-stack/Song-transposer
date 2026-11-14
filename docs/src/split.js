@@ -34,6 +34,8 @@ function titleScore(lines, types, i, blanksBefore, pageBreakBefore) {
   if (type.type !== 'lyric') return -Infinity;
   const text = line.trim();
   if (text.length > 60) return -Infinity;
+  // A line right under a tab ("PM - - - |", "let ring") is a mark on the tab.
+  if (!blanksBefore && !pageBreakBefore && types[i - 1] && types[i - 1].type === 'tab') return -Infinity;
   let score = 0;
   if (pageBreakBefore) score += 2;
   if (blanksBefore >= 2) score += 2;

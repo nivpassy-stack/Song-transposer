@@ -37,7 +37,16 @@ export function renderSheet(container, song) {
     }
     if (block.kind === 'tab') {
       const wrap = el('div', 'tab');
-      wrap.append(el('pre', '', block.lines.map((l) => l.trimStart()).join('\n')));
+      // Take off the indent the lines share, not each line's own, so
+      // chord names and marks stay over the notes they belong to.
+      const rows = block.rows || block.lines.map((text) => ({ type: 'tab', text }));
+      const indent = Math.min(...rows.map((r) => r.text.length - r.text.trimStart().length));
+      const pre = el('pre');
+      rows.forEach((r, n) => {
+        const text = r.text.slice(indent).trimEnd() + (n < rows.length - 1 ? '\n' : '');
+        pre.append(r.type === 'chords' ? el('span', 'tc', text) : document.createTextNode(text));
+      });
+      wrap.append(pre);
       return wrap;
     }
     if (block.kind === 'blank') return el('div', 'blank');

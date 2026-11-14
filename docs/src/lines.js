@@ -90,10 +90,17 @@ export function isTabLine(line) {
   // Notes after the last bar line ("|  repeat twice") don't stop it being a tab line.
   const lastBar = rest.lastIndexOf('|');
   const body = lastBar > 0 && /[A-Za-z]/.test(rest.slice(lastBar + 1)) ? rest.slice(0, lastBar + 1) : rest;
-  const trimmed = body.trim();
+  // Repeat dots written as "o" against a bar line ("|o--9--o|"), or at the
+  // start of a staff with no bar ("G-o---"), are part of the staff.
+  const dotted = `${bar ? '|' : ''}${body}`.replace(/\|o/gi, '|-').replace(/o\|/gi, '-|')
+    .replace(/^(\s*[-–—]?)o(?=[-–—])/i, label ? '$1-' : '$1o');
+  const trimmed = (bar ? dotted.slice(1) : dotted).trim();
   if (trimmed.length < 6 || !TAB_ALLOWED_RE.test(trimmed)) return false;
   const dashes = (trimmed.match(/[-–—]/g) || []).length;
-  if (dashes < 4 || dashes / trimmed.replace(/\s/g, '').length < 0.3) return false;
+  // A line that starts with a string name and a bar line may be packed with
+  // notes ("A|--6-666-666-666666-|"), so it needs fewer dashes.
+  const minRatio = label && bar ? 0.2 : 0.3;
+  if (dashes < 4 || dashes / trimmed.replace(/\s/g, '').length < minRatio) return false;
   // A bare row of dashes is a separator, not a tab line.
   return Boolean(label || bar || /[0-9|]/.test(trimmed));
 }

@@ -322,7 +322,7 @@ function retuneSummary(r) {
   if (r.moved) parts.push(`${r.moved} note${r.moved === 1 ? '' : 's'} moved to a thicker string.`);
   if (r.merged) parts.push(`${r.merged} doubled note${r.merged === 1 ? '' : 's'} (played on two strings in the old tuning) now played once.`);
   if (r.octave) parts.push(`${r.octave} note${r.octave === 1 ? ' is' : 's are'} lower than the low ${r.to.notes[0]} string, so ${r.octave === 1 ? 'it is' : 'they are'} played an octave up.`);
-  if (r.skipped) parts.push(`Tabs that are not ${r.from.pitches.length} strings were left as written.`);
+  if (r.skipped) parts.push(`Tabs that are not ${r.from.pitches.length} strings, or do not say which strings they are on, were left as written.`);
   if (r.shapeShift) parts.push(`Chords moved ${Math.abs(r.shapeShift)} semitone${Math.abs(r.shapeShift) === 1 ? '' : 's'} ${r.shapeShift < 0 ? 'down' : 'up'}, from shapes to the notes that sound.`);
   return parts.join(' ');
 }

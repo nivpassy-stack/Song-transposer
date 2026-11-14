@@ -513,3 +513,64 @@ test("splits Avital's newer PDF: songs side by side, contents out of page order"
   assert.ok(byTitle.Weak.source.includes('Lost in time'));
   assert.ok(!byTitle['Open Surgery'].source.includes('Lost in time'));
 });
+
+test('reads tab staffs with repeat dots and packed notes', async () => {
+  const { namedTuning } = await import('../src/tuning.js');
+  const { tabNotes } = await import('../src/tabs.js');
+  // "My Friends Over You": repeat dots ("|o", "o|") and a repeat count between bars.
+  const staff = [
+    'e|------------------|------------------|---|',
+    'B|------------------|------------------|---|',
+    'G|o--9-9-9-------9--|-----------------o|---|',
+    'D|o--9-9-9--x--x-9--|--7-7-7-------7--o|x3-|',
+    'A|---7-7-7--x--x-7--|--7-7-7--x--x-7---|---|',
+    'E|------------------|--5-5-5--x--x-5---|---|',
+  ];
+  for (const line of staff) assert.equal(classifyLine(line).type, 'tab', line);
+  // Lines packed with notes, and repeat counts after the last bar.
+  assert.equal(classifyLine('A|--6-666-666-666666-|-4-444-444-444444-|-2-222-222-222222-|-1-111-111-111111--|').type, 'tab');
+  assert.equal(classifyLine('D|o-------------------o|x19').type, 'tab');
+  assert.equal(classifyLine('G-o----4-4--6-6-6-6-6-6-6---o|').type, 'tab');
+  assert.equal(classifyLine('Go|home-now').type, 'lyric');
+
+  // The whole staff moves to a new tuning, not just the lines without dots.
+  const song = parseSong(staff.join('\n'));
+  assert.ok(song.lines.every((l) => l.type === 'tab'));
+  const half = transposeSong(song, 0, 'auto', { from: namedTuning('standard'), to: namedTuning('half-down') });
+  const lines = half.lines.map((l) => l.text);
+  assert.equal(lines[2], 'Gb|o--10-10-10------10-|-----------------o|---|');
+  assert.equal(lines[3], 'Db|o--10-10-10-x--x-10-|--8-8-8-------8--o|x3-|');
+  assert.equal(lines[5], 'Eb|--------------------|--6-6-6--x--x-6---|---|');
+  assert.equal(new Set(lines.map((l) => l.indexOf('|', 4))).size, 1, 'bar lines stay lined up');
+
+  // "666" is fret 6 three times; "22" under split notes is two fret 2s; "11" alone is fret 11.
+  const notes = tabNotes(['-6-666-', '-4-44--11-', '-2-22--9--']);
+  assert.deepEqual(notes[0].map((n) => n.fret), [6, 6, 6, 6]);
+  assert.deepEqual(notes[1].map((n) => n.fret), [4, 4, 4, 11]);
+  assert.deepEqual(notes[2].map((n) => n.fret), [2, 2, 2, 9]);
+  // Changing key keeps packed notes apart and every string lined up.
+  const up = transposeTabBlock(['D|-8-888-|', 'A|-6-666-|'], 4);
+  assert.deepEqual(up.lines, ['D|-12-12-12-12-|', 'A|-10-10-10-10-|']);
+  assert.equal(shiftTabLine('A|-6-666-|', 2), 'A|-8-888-|');
+
+  // A part tab with no string names moves when every string is retuned alike...
+  const part = ['|---3-----|', '|--4-4-x4-|', '|-4-------|'];
+  const { retuneTabBlock } = await import('../src/tuning.js');
+  assert.deepEqual(retuneTabBlock(part, namedTuning('standard'), namedTuning('half-down')).lines,
+    ['|---4-----|', '|--5-5-x4-|', '|-5-------|']);
+  // ...but not when only some strings change, as it is not known which strings it is on.
+  assert.equal(retuneTabBlock(part, namedTuning('standard'), namedTuning('drop-d')).skipped, true);
+});
+
+test("retunes every tab in Avital's newer PDF", { skip: !hasNewPdf }, async () => {
+  const { namedTuning } = await import('../src/tuning.js');
+  const text = await pdfToText(new Uint8Array(sample('songs-for-playing-2026-08.pdf')), pdfjs);
+  for (const s of splitSongs(text)) {
+    const song = parseSong(s.source, s);
+    const stray = song.lines.filter((l) => l.type !== 'tab' && /^\s*[A-Ga-g][#b]?\s*\|.*-{4}/.test(l.text || ''));
+    assert.deepEqual(stray.map((l) => l.text), [], `${s.title}: staff lines read as text`);
+    if (!song.lines.some((l) => l.type === 'tab')) continue;
+    const moved = transposeSong(song, 0, 'auto', { from: song.tuning || namedTuning('standard'), to: namedTuning('half-down') });
+    assert.equal(moved.retuned.skipped, 0, `${s.title}: a tab was left in the old tuning`);
+  }
+});

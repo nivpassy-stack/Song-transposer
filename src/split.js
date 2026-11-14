@@ -3,6 +3,12 @@ import { classifyLine, parseDirective } from './lines.js';
 import { normalizeText, parseSongLines } from './song.js';
 
 export const PAGE_BREAK = '\f';
+/**
+ * Put by the PDF reader at the start of a line set as a heading (bold, at
+ * least body size): a strong sign the line is a song's title. Invisible if
+ * it ever leaks into text.
+ */
+export const HEADING_MARK = '\u2063';
 
 const SEPARATOR_RE = /^\s*(?:([=_*#~])\1{3,}|-{5,})\s*$/;
 const NUMBERED_RE = /^\s*(\d{1,3})\s*[.)\-–]\s+(\S.*)$/;
@@ -28,13 +34,17 @@ function isChordProTitle(line) {
  * comes before (blank lines, a page break) and after (credits, key, capo,
  * a blank line) and at the line itself.
  */
-function titleScore(lines, types, i, blanksBefore, pageBreakBefore) {
+function titleScore(lines, types, i, blanksBefore, pageBreakBefore, headings, songStart) {
   const line = lines[i];
   const type = types[i];
   if (type.type !== 'lyric') return -Infinity;
   const text = line.trim();
   if (text.length > 60) return -Infinity;
   let score = 0;
+  // When the file marks its titles as headings, trust that over the layout:
+  // a title can sit mid-page after one blank line, and a lyric line can sit
+  // alone between blank lines.
+  if (headings) score += headings[i] ? 3 : -4;
   if (pageBreakBefore) score += 2;
   if (blanksBefore >= 2) score += 2;
   else if (blanksBefore === 1) score += 1;
@@ -47,6 +57,10 @@ function titleScore(lines, types, i, blanksBefore, pageBreakBefore) {
   else if (next && next.type === 'lyric' && after && after.type === 'meta') score += 2;
   else if (!next || next.type === 'blank') score += 1;
   if (/[,;]$/.test(text)) score -= 2;
+  // A line already sung in this song (a chorus line at the top of a new
+  // page) is a lyric, not the next song's title.
+  const key = text.toLowerCase();
+  if (lines.slice(songStart, i).some((l) => l.trim().toLowerCase() === key)) score -= 3;
   if (/repeat|chorus|פזמון|חזרה|\bx\s*\d|\d\s*x\b/i.test(text)) score -= 3;
   if (text.length > 45) score -= 1;
   return score;
@@ -61,9 +75,12 @@ const hasMusic = (types, from, to) =>
  * Clear markers win: ChordPro {title}/{new_song} lines and separator rows
  * (=====, *****). Otherwise a line that looks like a title (see titleScore)
  * starts a new song, as long as the song before it had some chords or tabs.
+ * `headings` flags lines the file set as headings (see HEADING_MARK); it is
+ * only used when the file has at least two.
  */
-export function findSongStarts(lines) {
+export function findSongStarts(lines, headings = []) {
   const types = lines.map((l) => (l === PAGE_BREAK ? { type: 'blank' } : classifyLine(l)));
+  const marked = headings.filter((h, i) => h && types[i].type === 'lyric').length >= 2 ? headings : null;
 
   if (lines.filter(isChordProTitle).length > 1) {
     const starts = [];
@@ -103,7 +120,7 @@ export function findSongStarts(lines) {
     if (i > current && isChordProTitle(line)) {
       starts.push(i);
     } else if (i > current && hasMusic(types, current, i)) {
-      if (titleScore(lines, types, i, blanks, pageBreak) >= 3) starts.push(i);
+      if (titleScore(lines, types, i, blanks, pageBreak, marked, current) >= 3) starts.push(i);
     }
     blanks = 0;
     pageBreak = false;
@@ -144,21 +161,29 @@ function titleKey(text) {
 
 /**
  * Song starts from a table of contents: each title is looked for, in order,
- * on a line of its own. Returns null if fewer than half the titles are found.
+ * on a line of its own. When the file marks headings, a heading with the
+ * title is taken over an earlier lyric line that happens to match it.
+ * Returns null if fewer than half the titles are found.
  */
-export function startsFromContents(lines, titles) {
+export function startsFromContents(lines, titles, headings = []) {
+  const useHeadings = headings.filter(Boolean).length >= 2;
+  const matches = (j, key) => {
+    const lineKey = titleKey(lines[j]);
+    return lineKey && lineKey.length >= key.length * 0.7 && (key === lineKey || key.startsWith(lineKey) || lineKey.startsWith(key));
+  };
   const starts = [];
   let i = 0;
   for (const title of titles) {
     const key = titleKey(title);
     if (!key) continue;
-    for (let j = i; j < lines.length; j++) {
-      const lineKey = titleKey(lines[j]);
-      if (lineKey && lineKey.length >= key.length * 0.7 && (key === lineKey || key.startsWith(lineKey) || lineKey.startsWith(key))) {
-        starts.push(j);
-        i = j + 1;
-        break;
-      }
+    let found = -1;
+    if (useHeadings) {
+      for (let j = i; j < lines.length && found < 0; j++) if (headings[j] && matches(j, key)) found = j;
+    }
+    for (let j = i; j < lines.length && found < 0; j++) if (matches(j, key)) found = j;
+    if (found >= 0) {
+      starts.push(found);
+      i = found + 1;
     }
   }
   if (starts.length < titles.length / 2) return null;
@@ -171,12 +196,17 @@ export function startsFromContents(lines, titles) {
  * plain-text song is taken as its title when it looks like one.
  */
 export function splitSongs(text) {
-  const lines = normalizeText(text)
+  const raw = normalizeText(text)
     .split('\n')
     .flatMap((l) => (l.includes(PAGE_BREAK) ? l.split(PAGE_BREAK).flatMap((p, k) => (k ? [PAGE_BREAK, p] : [p])) : [l]));
+  const headings = raw.map((l) => l.includes(HEADING_MARK));
+  const lines = raw.map((l) => l.replaceAll(HEADING_MARK, ''));
   const toc = findContents(lines);
-  if (toc) lines.splice(toc.from, toc.to - toc.from);
-  const starts = (toc && startsFromContents(lines, toc.titles)) || findSongStarts(lines);
+  if (toc) {
+    lines.splice(toc.from, toc.to - toc.from);
+    headings.splice(toc.from, toc.to - toc.from);
+  }
+  const starts = (toc && startsFromContents(lines, toc.titles, headings)) || findSongStarts(lines, headings);
   const songs = [];
   starts.forEach((start, k) => {
     const end = k + 1 < starts.length ? starts[k + 1] : lines.length;

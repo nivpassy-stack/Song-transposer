@@ -6,7 +6,7 @@ import mammoth from 'mammoth';
 import {
   parseChord, transposeChord, detectKey, classifyLine, shiftTabLine, transposeTabBlock,
   parseSong, transposeSong, songKeyName, songToText, songBlocks, splitSongs,
-  pdfToText, docxToText, decodeText, normalizeText,
+  pdfToText, docxToText, decodeText, normalizeText, pdfItemsToText, HEADING_MARK, PAGE_BREAK,
 } from '../src/index.js';
 
 const sample = (name) => fs.readFileSync(new URL(`./samples/${name}`, import.meta.url));
@@ -153,6 +153,63 @@ test('splits ChordPro songs that follow plain-text songs', () => {
   assert.deepEqual(splitSongs(text).map((s) => s.title), ['ירושלים של זהב', 'הבה נגילה', 'Amazing Grace']);
 });
 
+// Song splitting where layout alone is misleading: a title mid-page after one
+// blank line, and a page that opens with a chorus line from the song before.
+const PAGE = `\n${PAGE_BREAK}\n`;
+const sungTwice = [
+  'First Song', '',
+  'G         C', 'Hello there my friend', '',
+  'A               C', 'Cause you know where I will be', '',
+  'G         C', 'Hello again my friend', '',
+  'A               C', 'Cause you know where I will be',
+].join('\n');
+const thenTitled = [
+  'G         C', 'Sing it one more time', '',
+  'Second Song', '',
+  'Am        F', 'Down by the water',
+].join('\n');
+
+test('PDF rows set in bold at body size are marked as headings', () => {
+  const item = (str, x, y, fontName, size = 10) => ({ str, transform: [size, 0, 0, size, x, y], width: str.length * size * 0.5, height: size, fontName });
+  const text = pdfItemsToText([
+    item('Second Song', 50, 700, 'bold', 11),
+    item('Am', 50, 680, 'chord'),
+    item('Down by the water', 50, 668, 'body'),
+    item('small print', 50, 600, 'bold', 6),
+  ], [], { bold: { bold: true }, chord: { bold: true }, body: { bold: false } });
+  const lines = text.split('\n');
+  assert.equal(lines[0].replace(/\s+/g, ' '), `${HEADING_MARK}Second Song`);
+  assert.ok(lines.includes('Down by the water'));
+  assert.ok(lines.includes('small print'), 'bold text smaller than the body is not a title');
+});
+
+test('a chorus line at the top of a page does not start a new song', () => {
+  const text = `${sungTwice}${PAGE}    Cause you know where I will be${PAGE}${thenTitled}`;
+  const songs = splitSongs(text);
+  assert.equal(songs[0].title, 'First Song');
+  assert.ok(!songs.some((s) => /Cause you know/.test(s.title)));
+});
+
+test('headings in a PDF mark where each song starts', () => {
+  const text = `${HEADING_MARK}${sungTwice}${PAGE}    Cause you know where I will be\n\n${thenTitled.replace('Second Song', HEADING_MARK + 'Second Song')}`;
+  const songs = splitSongs(text);
+  assert.deepEqual(songs.map((s) => s.title), ['First Song', 'Second Song']);
+  assert.ok(songs[0].source.includes('Sing it one more time'));
+  assert.ok(songs[1].source.startsWith('Am'));
+  assert.ok(!songs.some((s) => s.source.includes(HEADING_MARK)));
+});
+
+test('a contents entry is matched to the heading, not to a lyric line before it', () => {
+  const text = [
+    'Contents', 'First Song ........ 1', 'Down by the Water ........ 2', PAGE_BREAK,
+    `${HEADING_MARK}First Song`, '', 'G         C', 'Down by the water', '', 'G   C', 'la la la', PAGE_BREAK,
+    `${HEADING_MARK}Down by the Water`, '', 'Am        F', 'Rolling on the river',
+  ].join('\n');
+  const songs = splitSongs(text);
+  assert.deepEqual(songs.map((s) => s.title), ['First Song', 'Down by the Water']);
+  assert.ok(songs[0].source.includes('la la la'));
+});
+
 // Avital's own song file is kept out of the public repository; the test runs where it exists.
 const hasRealPdf = fs.existsSync(new URL('./samples/songs-for-playing.pdf', import.meta.url));
 
@@ -170,6 +227,19 @@ test("reads Avital's multi-song PDF: table cells, contents page, Hebrew song", {
   assert.ok(blink.includes('All the small things\n          G             C\nTrue care, truth brings'));
   assert.ok(blink.includes('|---|   |-6-|  |---|'));
   assert.ok(songToText(hebrew).includes('סולו:'));
+});
+
+test("splits Avital's multi-song PDF at each title even without its contents page", { skip: !hasRealPdf }, async () => {
+  const text = await pdfToText(new Uint8Array(sample('songs-for-playing.pdf')), pdfjs);
+  const withoutContents = text.split(PAGE_BREAK).slice(1).join(PAGE_BREAK);
+  const songs = splitSongs(withoutContents);
+  assert.deepEqual(songs.map((s) => s.title), [
+    'Blink-182', 'All I Want', 'Weak', 'Pink Stars', 'Everything for Free (capo 2)', 'Feel the Pain',
+    'Come as You Are', 'Easy', 'The Middle', 'Open Surgery', 'Truth of My Youth', 'When I Come Around',
+    'Hash Pipe', 'עוד ארון אחד',
+  ]);
+  assert.ok(songs[8].source.trimEnd().endsWith('everything will be alright (alright)'));
+  assert.ok(songs[11].source.includes("Cause you know where I'll be found"));
 });
 
 test('backs up and restores the library', async () => {

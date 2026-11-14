@@ -1,5 +1,5 @@
 // Reading text out of uploaded files: plain text, ChordPro, PDF, Word, HTML.
-import { PAGE_BREAK } from './split.js';
+import { PAGE_BREAK, HEADING_MARK } from './split.js';
 
 const PDFJS_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs';
 const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
@@ -65,7 +65,7 @@ const isRtl = (pieces) => countMatches(pieces, /[\u0590-\u05FF]/g) > countMatche
  * block, columns are counted from the right edge, so the start of each line
  * is on the right, as in the text model for Hebrew songs.
  */
-function piecesToText(pieces, charW) {
+function piecesToText(pieces, charW, bodySize = 0) {
   if (!pieces.length) return '';
   const rtl = isRtl(pieces);
   const left = Math.min(...pieces.map((p) => p.x));
@@ -88,9 +88,36 @@ function piecesToText(pieces, charW) {
       str: p.str,
       col: Math.max(0, Math.round((rtl ? right - (p.x + p.width) : p.x - left) / charW)),
     }));
-    out.push(placeAll(placements));
+    const text = placeAll(placements);
+    out.push(isHeadingRow(row, text, bodySize) ? HEADING_MARK + text : text);
   });
   return out.join('\n');
+}
+
+/**
+ * A row set all in bold, at least as large as the page's body text, with
+ * words in it and short enough to be a title: how Word and most song books
+ * set a song's title. The splitter uses it to tell titles from lyric lines
+ * that happen to sit between blank lines.
+ */
+function isHeadingRow(row, text, bodySize) {
+  if (!bodySize || !row.pieces.every((p) => p.bold)) return false;
+  if (row.pieces.some((p) => p.size < bodySize - 0.5)) return false;
+  const trimmed = text.trim();
+  return trimmed.length <= 60 && /\p{L}{2}/u.test(trimmed);
+}
+
+/** The font size most of the page's text is set in. */
+function bodyFontSize(pieces) {
+  const chars = new Map();
+  for (const p of pieces) {
+    const size = Math.round(p.size * 2) / 2;
+    chars.set(size, (chars.get(size) || 0) + p.str.length);
+  }
+  let best = 0;
+  let most = -1;
+  for (const [size, n] of chars) if (n > most) [best, most] = [size, n];
+  return best;
 }
 
 /**
@@ -117,11 +144,12 @@ function mergeTouching(pieces, charW) {
   return out;
 }
 
-function toPieces(items) {
+function toPieces(items, fonts) {
   return items.flatMap((item) => itemPieces(item).map((p) => ({
     ...p,
     y: item.transform[5],
     size: Math.abs(item.transform[3]) || item.height || 10,
+    bold: Boolean(fonts[item.fontName]?.bold),
   })));
 }
 
@@ -133,12 +161,16 @@ function toPieces(items) {
  * (`cells`, as [x0, y0, x1, y1] boxes), each cell is read on its own:
  * cells in a row go left to right, or right to left on a Hebrew page, and
  * text outside the table (such as the song title) keeps its place.
+ *
+ * `fonts` maps each item's fontName to {bold}; rows set as a heading (see
+ * isHeadingRow) start with HEADING_MARK.
  */
-export function pdfItemsToText(items, cells = []) {
-  const pieces = toPieces(items);
+export function pdfItemsToText(items, cells = [], fonts = {}) {
+  const pieces = toPieces(items, fonts);
   if (!pieces.length) return '';
   const charW = median(pieces.filter((p) => p.str.length > 1).map((p) => p.width / p.str.length)) || 5;
-  if (!cells.length) return piecesToText(pieces, charW);
+  const bodySize = bodyFontSize(pieces);
+  if (!cells.length) return piecesToText(pieces, charW, bodySize);
 
   const rtl = isRtl(pieces);
   const units = cells.map((box) => ({ box, top: box[3], pieces: [] }));
@@ -170,11 +202,11 @@ export function pdfItemsToText(items, cells = []) {
   const texts = [];
   for (const block of blocks) {
     if (block.loose) {
-      texts.push(piecesToText(block.pieces, charW));
+      texts.push(piecesToText(block.pieces, charW, bodySize));
       continue;
     }
     block.row.sort((a, b) => (rtl ? b.box[0] - a.box[0] : a.box[0] - b.box[0]));
-    for (const cell of block.row) texts.push(piecesToText(cell.pieces, charW));
+    for (const cell of block.row) texts.push(piecesToText(cell.pieces, charW, bodySize));
   }
   return texts.filter((t) => t.trim()).join('\n\n');
 }
@@ -198,6 +230,27 @@ export async function pdfPageCells(page, lib) {
   const boxes = [...seen.values()];
   const contains = (a, b) => a !== b && a[0] <= b[0] + 2 && a[1] <= b[1] + 2 && a[2] >= b[2] - 2 && a[3] >= b[3] - 2;
   return boxes.filter((a) => !boxes.some((b) => contains(a, b)));
+}
+
+const BOLD_NAME_RE = /bold|black|heavy|semibold|demibold|extrabold/i;
+
+/**
+ * Which of the page's fonts are bold, from the font objects pdf.js loads
+ * while reading the page's drawing commands (so after getOperatorList).
+ */
+export function pageFonts(page, items) {
+  const fonts = {};
+  for (const { fontName } of items) {
+    if (!fontName || fontName in fonts) continue;
+    let font = null;
+    try {
+      font = page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
+    } catch {
+      font = null;
+    }
+    fonts[fontName] = { bold: Boolean(font && (font.bold || font.black || BOLD_NAME_RE.test(font.name || ''))) };
+  }
+  return fonts;
 }
 
 let pdfjsPromise = null;
@@ -225,7 +278,8 @@ export async function pdfToText(data, pdfjs) {
     } catch {
       // Reading the drawing commands is a bonus; plain text still works without it.
     }
-    pages.push(pdfItemsToText(content.items.filter((it) => 'str' in it), cells));
+    const items = content.items.filter((it) => 'str' in it);
+    pages.push(pdfItemsToText(items, cells, pageFonts(page, items)));
   }
   return pages.join(`\n${PAGE_BREAK}\n`);
 }

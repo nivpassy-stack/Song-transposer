@@ -1,5 +1,5 @@
 // Reading text out of uploaded files: plain text, ChordPro, PDF, Word, HTML.
-import { PAGE_BREAK } from './split.js';
+import { PAGE_BREAK, HEADING_MARK } from './split.js';
 
 const PDFJS_URL = new URL('../vendor/pdf.min.mjs', import.meta.url).href;
 const PDFJS_WORKER_URL = new URL('../vendor/pdf.worker.min.mjs', import.meta.url).href;
@@ -65,7 +65,7 @@ const isRtl = (pieces) => countMatches(pieces, /[\u0590-\u05FF]/g) > countMatche
  * block, columns are counted from the right edge, so the start of each line
  * is on the right, as in the text model for Hebrew songs.
  */
-function piecesToText(pieces, charW) {
+function piecesToText(pieces, charW, bodySize = 0) {
   if (!pieces.length) return '';
   const rtl = isRtl(pieces);
   const left = Math.min(...pieces.map((p) => p.x));
@@ -88,9 +88,36 @@ function piecesToText(pieces, charW) {
       str: p.str,
       col: Math.max(0, Math.round((rtl ? right - (p.x + p.width) : p.x - left) / charW)),
     }));
-    out.push(placeAll(placements));
+    const text = placeAll(placements);
+    out.push(isHeadingRow(row, text, bodySize) ? HEADING_MARK + text : text);
   });
   return out.join('\n');
+}
+
+/**
+ * A row set all in bold, at least as large as the page's body text, with
+ * words in it and short enough to be a title: how Word and most song books
+ * set a song's title. The splitter uses it to tell titles from lyric lines
+ * that happen to sit between blank lines.
+ */
+function isHeadingRow(row, text, bodySize) {
+  if (!bodySize || !row.pieces.every((p) => p.bold)) return false;
+  if (row.pieces.some((p) => p.size < bodySize - 0.5)) return false;
+  const trimmed = text.trim();
+  return trimmed.length <= 60 && /\p{L}{2}/u.test(trimmed);
+}
+
+/** The font size most of the page's text is set in. */
+function bodyFontSize(pieces) {
+  const chars = new Map();
+  for (const p of pieces) {
+    const size = Math.round(p.size * 2) / 2;
+    chars.set(size, (chars.get(size) || 0) + p.str.length);
+  }
+  let best = 0;
+  let most = -1;
+  for (const [size, n] of chars) if (n > most) [best, most] = [size, n];
+  return best;
 }
 
 /**
@@ -117,11 +144,12 @@ function mergeTouching(pieces, charW) {
   return out;
 }
 
-function toPieces(items) {
+function toPieces(items, fonts) {
   return items.flatMap((item) => itemPieces(item).map((p) => ({
     ...p,
     y: item.transform[5],
     size: Math.abs(item.transform[3]) || item.height || 10,
+    bold: Boolean(fonts[item.fontName]?.bold),
   })));
 }
 
@@ -133,48 +161,175 @@ function toPieces(items) {
  * (`cells`, as [x0, y0, x1, y1] boxes), each cell is read on its own:
  * cells in a row go left to right, or right to left on a Hebrew page, and
  * text outside the table (such as the song title) keeps its place.
+ *
+ * `fonts` maps each item's fontName to {bold}; rows set as a heading (see
+ * isHeadingRow) start with HEADING_MARK.
  */
-export function pdfItemsToText(items, cells = []) {
-  const pieces = toPieces(items);
+export function pdfItemsToText(items, cells = [], fonts = {}) {
+  const pieces = toPieces(items, fonts);
   if (!pieces.length) return '';
   const charW = median(pieces.filter((p) => p.str.length > 1).map((p) => p.width / p.str.length)) || 5;
-  if (!cells.length) return piecesToText(pieces, charW);
+  const bodySize = bodyFontSize(pieces);
+  if (!cells.length) return piecesToText(pieces, charW, bodySize);
 
-  const rtl = isRtl(pieces);
-  const units = cells.map((box) => ({ box, top: box[3], pieces: [] }));
+  // A piece belongs to the cell it sits in. A line drawn across a cell's
+  // top or bottom border (clipped by it) still belongs to that cell.
+  const boxes = cells.map((box) => ({ box, pieces: [] }));
   const loose = [];
   for (const p of pieces) {
     const cx = p.x + p.width / 2;
     const cy = p.y + p.size * 0.3;
-    const unit = units.find(({ box }) => cx >= box[0] && cx <= box[2] && cy >= box[1] && cy <= box[3]);
-    if (unit) unit.pieces.push(p);
+    const inside = (slack) => boxes.find(({ box }) => cx >= box[0] && cx <= box[2] && cy >= box[1] - slack && cy <= box[3] + slack);
+    const cell = inside(0) || inside(p.size * 0.7);
+    if (cell) cell.pieces.push(p);
     else loose.push(p);
   }
-  // Text outside cells: one unit per run of rows between cells.
-  for (const p of loose) units.push({ top: p.y + p.size, pieces: [p], loose: true });
+  const units = tables(boxes.filter((c) => c.pieces.length));
+  units.push(...looseSegments(loose, charW).map((seg) => ({ ...seg, parts: [seg.pieces] })));
+  return stacksToText(units, charW, bodySize, isRtl(pieces));
+}
 
-  units.sort((a, b) => b.top - a.top);
-  // Merge loose pieces that sit together into one block, and order cells in a row.
-  const blocks = [];
-  for (const unit of units) {
-    if (!unit.pieces.length) continue;
-    const prev = blocks.at(-1);
-    if (unit.loose && prev && prev.loose) {
-      prev.pieces.push(...unit.pieces);
-    } else if (!unit.loose && prev && !prev.loose && Math.abs(prev.top - unit.top) < 6) {
-      prev.row.push(unit);
-    } else {
-      blocks.push(unit.loose ? { loose: true, pieces: [...unit.pieces] } : { top: unit.top, row: [unit] });
+/**
+ * Cells that touch form a table (a Word table: rows of cells sharing their
+ * borders), read row by row, across in the direction of its text. Cells
+ * that stand apart (text boxes set as columns) are units of their own.
+ */
+function tables(cells) {
+  const near = (a, b) => a[0] <= b[2] + 3 && b[0] <= a[2] + 3 && a[1] <= b[3] + 3 && b[1] <= a[3] + 3;
+  const groups = [];
+  for (const cell of cells) {
+    const touching = groups.filter((g) => g.some((c) => near(c.box, cell.box)));
+    const group = touching[0] || [];
+    if (!touching.length) groups.push(group);
+    for (const other of touching.slice(1)) {
+      group.push(...other);
+      groups.splice(groups.indexOf(other), 1);
+    }
+    group.push(cell);
+  }
+  return groups.map((group) => {
+    const rtl = isRtl(group.flatMap((c) => c.pieces));
+    const rows = [];
+    for (const cell of [...group].sort((a, b) => b.box[3] - a.box[3])) {
+      const row = rows.find((r) => Math.abs(r[0].box[3] - cell.box[3]) < 6);
+      if (row) row.push(cell);
+      else rows.push([cell]);
+    }
+    const ordered = rows.flatMap((row) => row.sort((a, b) => (rtl ? b.box[0] - a.box[0] : a.box[0] - b.box[0])));
+    return {
+      left: Math.min(...group.map((c) => c.box[0])),
+      right: Math.max(...group.map((c) => c.box[2])),
+      top: Math.max(...group.map((c) => c.box[3])),
+      pieces: group.flatMap((c) => c.pieces),
+      parts: ordered.map((c) => c.pieces),
+      cell: true,
+    };
+  });
+}
+
+/**
+ * Text outside the cells (song titles, notes) as segments: rows of pieces,
+ * cut where a wide gap shows two things side by side, such as the titles of
+ * two songs set next to each other. Rows that follow each other closely and
+ * overlap are joined into one segment.
+ */
+function looseSegments(loose, charW) {
+  const rows = [];
+  for (const p of [...loose].sort((a, b) => b.y - a.y)) {
+    const row = rows.at(-1);
+    if (row && Math.abs(row.y - p.y) < p.size * 0.5) row.pieces.push(p);
+    else rows.push({ y: p.y, size: p.size, pieces: [p] });
+  }
+  const segments = [];
+  for (const row of rows) {
+    const sorted = row.pieces.sort((a, b) => a.x - b.x);
+    let seg = null;
+    for (const p of sorted) {
+      if (seg && p.x - seg.right < charW * 8) {
+        seg.pieces.push(p);
+        seg.right = Math.max(seg.right, p.x + p.width);
+      } else {
+        seg = { left: p.x, right: p.x + p.width, top: row.y + row.size, bottom: row.y, pieces: [p] };
+        segments.push(seg);
+      }
     }
   }
-  const texts = [];
-  for (const block of blocks) {
-    if (block.loose) {
-      texts.push(piecesToText(block.pieces, charW));
-      continue;
+  // Join a segment with the one just above it when they overlap (a title
+  // over an artist line, a few lines of notes).
+  const joined = [];
+  for (const seg of segments) {
+    const above = joined.find((u) => u.bottom - seg.top < seg.pieces[0].size * 1.2 && u.bottom > seg.bottom && seg.left < u.right && seg.right > u.left);
+    if (above) {
+      above.pieces.push(...seg.pieces);
+      above.left = Math.min(above.left, seg.left);
+      above.right = Math.max(above.right, seg.right);
+      above.bottom = seg.bottom;
+    } else {
+      joined.push({ ...seg });
     }
-    block.row.sort((a, b) => (rtl ? b.box[0] - a.box[0] : a.box[0] - b.box[0]));
-    for (const cell of block.row) texts.push(piecesToText(cell.pieces, charW));
+  }
+  return joined;
+}
+
+const overlaps = (a, b) => a.left < b.right - 2 && b.left < a.right - 2;
+
+/**
+ * Put cells and loose text in reading order. Units that overlap
+ * side to side form a stack, read top to bottom: a title and the cells
+ * under it. A stack of cells with no title over it continues the song next
+ * to it: the one on its left for Latin text, on its right for Hebrew, as a
+ * song set in two or three columns does. Songs are then read in rows down
+ * the page, across in the page's direction.
+ */
+function stacksToText(units, charW, bodySize, pageRtl) {
+  const stacks = [];
+  for (const unit of units) {
+    const touching = stacks.filter((s) => s.units.some((u) => overlaps(u, unit)));
+    const stack = touching[0] || { units: [] };
+    if (!touching.length) stacks.push(stack);
+    for (const other of touching.slice(1)) {
+      stack.units.push(...other.units);
+      stacks.splice(stacks.indexOf(other), 1);
+    }
+    stack.units.push(unit);
+  }
+  for (const s of stacks) {
+    s.units.sort((a, b) => b.top - a.top);
+    s.left = Math.min(...s.units.map((u) => u.left));
+    s.right = Math.max(...s.units.map((u) => u.right));
+    s.top = s.units[0].top;
+    s.titled = !s.units[0].cell;
+    s.rtl = isRtl(s.units.flatMap((u) => u.pieces));
+    s.next = [];
+  }
+  const songs = stacks.filter((s) => s.titled);
+  if (!songs.length) {
+    // No titles at all: the old reading, cells in rows across the page.
+    const all = { units: [...units].sort((a, b) => b.top - a.top || (pageRtl ? b.left - a.left : a.left - b.left)), next: [] };
+    return unitsText([all], charW, bodySize);
+  }
+  // Untitled stacks, nearest first, join the song they continue.
+  const orphans = stacks.filter((s) => !s.titled);
+  const byDistance = (s) => (s.rtl ? s.left : -s.right);
+  orphans.sort((a, b) => (a.rtl ? b.left - a.left : a.left - b.left));
+  for (const orphan of orphans.sort((a, b) => byDistance(b) - byDistance(a))) {
+    const before = stacks.filter((s) => s !== orphan && (s.titled || s.owner) && (orphan.rtl ? s.left >= orphan.right - 2 : s.right <= orphan.left + 2));
+    before.sort((a, b) => (orphan.rtl ? a.left - b.left : b.right - a.right));
+    const prev = before[0];
+    const owner = prev ? (prev.owner || prev) : songs[0];
+    orphan.owner = owner;
+    owner.next.push(orphan);
+  }
+  songs.sort((a, b) => (Math.abs(a.top - b.top) > 6 ? b.top - a.top : pageRtl ? b.right - a.right : a.left - b.left));
+  return unitsText(songs, charW, bodySize);
+}
+
+function unitsText(stacks, charW, bodySize) {
+  const texts = [];
+  for (const stack of stacks) {
+    for (const s of [stack, ...stack.next]) {
+      for (const unit of s.units) for (const part of unit.parts) texts.push(piecesToText(part, charW, bodySize));
+    }
   }
   return texts.filter((t) => t.trim()).join('\n\n');
 }
@@ -186,18 +341,58 @@ export function pdfItemsToText(items, cells = []) {
  */
 export async function pdfPageCells(page, lib) {
   const ops = await page.getOperatorList();
+  const { OPS } = lib;
+  // Paths are drawn in the current transform, which save/restore/transform
+  // change; boxes must be put in page space to compare with text positions.
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
   const seen = new Map();
   ops.fnArray.forEach((fn, i) => {
-    if (fn !== lib.OPS.constructPath) return;
-    const minMax = ops.argsArray[i] && ops.argsArray[i][2];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS.transform && args) {
+      const [a, b, c, d, e, f] = args;
+      ctm = [
+        a * ctm[0] + b * ctm[2], a * ctm[1] + b * ctm[3],
+        c * ctm[0] + d * ctm[2], c * ctm[1] + d * ctm[3],
+        e * ctm[0] + f * ctm[2] + ctm[4], e * ctm[1] + f * ctm[3] + ctm[5],
+      ];
+    }
+    if (fn !== OPS.constructPath) return;
+    const minMax = args && args[2];
     if (!minMax || minMax.length !== 4) return;
-    const box = Array.from(minMax, (v) => Math.round(v));
+    const [x0, y0] = apply(ctm, minMax[0], minMax[1]);
+    const [x1, y1] = apply(ctm, minMax[2], minMax[3]);
+    const box = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)].map(Math.round);
     if (box[2] - box[0] < 80 || box[3] - box[1] < 60) return;
     seen.set(box.join(','), box);
   });
   const boxes = [...seen.values()];
   const contains = (a, b) => a !== b && a[0] <= b[0] + 2 && a[1] <= b[1] + 2 && a[2] >= b[2] - 2 && a[3] >= b[3] - 2;
   return boxes.filter((a) => !boxes.some((b) => contains(a, b)));
+}
+
+const BOLD_NAME_RE = /bold|black|heavy|semibold|demibold|extrabold/i;
+
+/**
+ * Which of the page's fonts are bold, from the font objects pdf.js loads
+ * while reading the page's drawing commands (so after getOperatorList).
+ */
+export function pageFonts(page, items) {
+  const fonts = {};
+  for (const { fontName } of items) {
+    if (!fontName || fontName in fonts) continue;
+    let font = null;
+    try {
+      font = page.commonObjs.has(fontName) ? page.commonObjs.get(fontName) : null;
+    } catch {
+      font = null;
+    }
+    fonts[fontName] = { bold: Boolean(font && (font.bold || font.black || BOLD_NAME_RE.test(font.name || ''))) };
+  }
+  return fonts;
 }
 
 let pdfjsPromise = null;
@@ -225,7 +420,8 @@ export async function pdfToText(data, pdfjs) {
     } catch {
       // Reading the drawing commands is a bonus; plain text still works without it.
     }
-    pages.push(pdfItemsToText(content.items.filter((it) => 'str' in it), cells));
+    const items = content.items.filter((it) => 'str' in it);
+    pages.push(pdfItemsToText(items, cells, pageFonts(page, items)));
   }
   return pages.join(`\n${PAGE_BREAK}\n`);
 }

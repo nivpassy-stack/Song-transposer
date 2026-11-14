@@ -461,6 +461,31 @@ test('restores the player\'s own tunings from a backup', async () => {
   assert.deepEqual(b.prefs.myTunings, { 'bass-4': 'D A D G', 'guitar-6': 'D A D G B E' });
 });
 
+test('keeps chord names and marks around a tab in the tab block', () => {
+  const text = [
+    'Song - Band', '', '[Intro]',
+    '   Am      G',
+    'e|---0-----3---|',
+    'B|---1-----0---|',
+    '  PM - - - - |',
+    '', '[Verse]', 'Am   G', 'Hello there', '',
+    '  let ring',
+    'e|---0---|',
+    '   1 + 2 +',
+    'e|---2---|',
+    'Some words',
+  ].join('\n');
+  const songs = splitSongs(text);
+  assert.equal(songs.length, 1, 'a mark under a tab is not a new song title');
+  const song = transposeSong(songs[0], 2);
+  const tabs = songBlocks(song).filter((b) => b.kind === 'tab');
+  assert.deepEqual(tabs[0].lines, ['   Bm      A', 'e|---2-----5---|', 'B|---3-----2---|', '  PM - - - - |']);
+  assert.equal(tabs[0].rows[0].type, 'chords');
+  assert.deepEqual(tabs[1].lines, ['  let ring', 'e|---2---|', '   1 + 2 +', 'e|---4---|', 'Some words']);
+  const pair = songBlocks(song).find((b) => b.kind === 'pair');
+  assert.equal(pair.segments[0].chord, 'Bm', 'a chord-over-lyric pair is not pulled into a tab');
+});
+
 // Avital's newer song file (text boxes, songs side by side): also kept out of the repository.
 const hasNewPdf = fs.existsSync(new URL('./samples/songs-for-playing-2026-08.pdf', import.meta.url));
 

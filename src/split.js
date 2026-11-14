@@ -40,6 +40,8 @@ function titleScore(lines, types, i, blanksBefore, pageBreakBefore, headings, so
   if (type.type !== 'lyric') return -Infinity;
   const text = line.trim();
   if (text.length > 60) return -Infinity;
+  // A line right under a tab ("PM - - - |", "let ring") is a mark on the tab.
+  if (!blanksBefore && !pageBreakBefore && !(headings && headings[i]) && types[i - 1] && types[i - 1].type === 'tab') return -Infinity;
   let score = 0;
   // When the file marks its titles as headings, trust that over the layout:
   // a title can sit mid-page after one blank line, and a lyric line can sit

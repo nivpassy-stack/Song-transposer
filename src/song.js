@@ -304,26 +304,72 @@ export function pairChordsWithLyric(tokens, lyric) {
   return segments;
 }
 
+// A chord or text line can belong to a tab: chord names over the staves,
+// "P.M. - - -" or "let ring" marks, beat counts, lyrics written under the
+// notes. These are aligned to the tab's columns, so they are drawn with it.
+const HEBREW_CHAR_RE = /[\u0590-\u05FF]/;
+const canJoinTab = (line) => Boolean(line)
+  && (line.type === 'chords' || line.type === 'lyric')
+  && !HEBREW_CHAR_RE.test(line.text);
+const endsTabText = (line) => !line || line.type === 'blank' || line.type === 'section' || line.type === 'meta';
+
+/**
+ * Find the lines that make up each tab block: [start, end) ranges of line
+ * indexes. A block is a run of tab lines, joined with up to two chord or
+ * text lines between staves, the line just above the first stave, and the
+ * line just below the last one, when those lines sit right against the tab
+ * and are not part of a chord-over-lyric pair.
+ */
+export function tabRanges(lines) {
+  const runs = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].type !== 'tab') continue;
+    let j = i;
+    while (j < lines.length && lines[j].type === 'tab') j++;
+    runs.push([i, j]);
+    i = j - 1;
+  }
+  // Join staves with annotation lines between them.
+  const merged = [];
+  for (const run of runs) {
+    const prev = merged.at(-1);
+    const between = prev ? lines.slice(prev[1], run[0]) : null;
+    if (prev && between.length <= 2 && between.every(canJoinTab)) prev[1] = run[1];
+    else merged.push([...run]);
+  }
+  for (const range of merged) {
+    const [start, end] = range;
+    const above = lines[start - 1];
+    if (canJoinTab(above) && lines[start - 2]?.type !== 'chords'
+      && !merged.some((r) => r[1] === start)) range[0] = start - 1;
+    const below = lines[end];
+    if (canJoinTab(below) && endsTabText(lines[end + 1])) range[1] = end + 1;
+  }
+  return merged;
+}
+
 /**
  * Group a song's lines into display blocks: chord+lyric pairs, tab blocks,
- * sections, plain lines.
+ * sections, plain lines. A tab block has `lines` (its text) and `rows`
+ * ({text, type}, so chord lines in it can be told apart).
  */
 export function songBlocks(song) {
   const blocks = [];
   const lines = song.lines;
+  const tabStarts = new Map(tabRanges(lines).map(([a, b]) => [a, b]));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const next = lines[i + 1];
-    if (line.type === 'chords' && next && next.type === 'lyric') {
+    if (tabStarts.has(i)) {
+      const end = tabStarts.get(i);
+      const rows = lines.slice(i, end).map((l) => ({ type: l.type, text: l.text }));
+      blocks.push({ kind: 'tab', lines: rows.map((r) => r.text), rows });
+      i = end - 1;
+    } else if (line.type === 'chords' && next && next.type === 'lyric') {
       blocks.push({ kind: 'pair', segments: pairChordsWithLyric(line.tokens, next.text) });
       i++;
     } else if (line.type === 'chords') {
       blocks.push({ kind: 'chords', segments: pairChordsWithLyric(line.tokens, '') });
-    } else if (line.type === 'tab') {
-      const tab = [];
-      while (i < lines.length && lines[i].type === 'tab') tab.push(lines[i++].text);
-      i--;
-      blocks.push({ kind: 'tab', lines: tab });
     } else {
       blocks.push({ kind: line.type, text: line.text || '' });
     }
